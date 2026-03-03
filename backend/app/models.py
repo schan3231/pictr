@@ -156,6 +156,24 @@ class CreateSessionRequest(BaseModel):
     pass
 
 
+class ReviseRequest(BaseModel):
+    """Body for POST /session/{id}/shots/{index}/revise."""
+
+    feedback: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="User feedback describing the required changes.",
+    )
+
+    @field_validator("feedback", mode="before")
+    @classmethod
+    def strip_feedback(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
+
 class ErrorResponse(BaseModel):
     """
     Consistent error payload shape returned by all HTTPException handlers.
