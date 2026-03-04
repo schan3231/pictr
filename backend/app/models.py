@@ -11,12 +11,11 @@ Design notes:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Literal, Optional
+from datetime import UTC, datetime
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
-
 
 # ---------------------------------------------------------------------------
 # Brief
@@ -93,13 +92,13 @@ class Shot(BaseModel):
     revision: int = Field(default=0, ge=0, description="Number of regeneration attempts.")
 
     # Generated content — all optional until the shot is generated.
-    image_url: Optional[str] = Field(default=None, description="URL of the generated image.")
-    dialogue_text: Optional[str] = Field(default=None, description="Example voiceover / dialogue.")
-    sfx_notes: Optional[str] = Field(default=None, description="Sound-effects guidance.")
-    camera_notes: Optional[str] = Field(default=None, description="Camera motion / angle notes.")
+    image_url: str | None = Field(default=None, description="URL of the generated image.")
+    dialogue_text: str | None = Field(default=None, description="Example voiceover / dialogue.")
+    sfx_notes: str | None = Field(default=None, description="Sound-effects guidance.")
+    camera_notes: str | None = Field(default=None, description="Camera motion / angle notes.")
 
     # User feedback attached when they request changes.
-    user_feedback: Optional[str] = Field(
+    user_feedback: str | None = Field(
         default=None,
         max_length=1000,
         description="Feedback from the user when requesting changes.",
@@ -115,7 +114,7 @@ PhaseType = Literal["INTAKE", "STORYBOARD"]
 
 def _utcnow_iso() -> str:
     """Return current UTC time as an ISO-8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class Session(BaseModel):
@@ -131,7 +130,7 @@ class Session(BaseModel):
     session_id: str = Field(default_factory=lambda: str(uuid4()))
     phase: PhaseType = Field(default="INTAKE")
 
-    brief: Optional[Brief] = Field(default=None)
+    brief: Brief | None = Field(default=None)
     shots: list[Shot] = Field(default_factory=list)
 
     # Pointer to the shot currently being worked on.

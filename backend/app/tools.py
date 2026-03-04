@@ -6,17 +6,21 @@ Design notes:
   the session store; the agent is responsible for persisting results.
 - Each tool has a clear, typed interface so it can be registered with ADK's
   function-calling mechanism with minimal glue.
-- The image generation tool is a STUB that returns a placeholder URL.  The
-  function signature and return type are intentionally final so swapping in a
-  real provider (e.g. Gemini Imagen, DALL-E) requires only the body.
+- Image generation is delegated to ImageClient (image_client.py).  When the
+  client is in stub mode (no GCP configured) it returns a picsum placeholder.
+  When GCP is configured it returns a base64 data URL from Vertex AI Imagen.
+  tools.py is unaware of which mode is active.
 """
 
 from __future__ import annotations
 
+import logging
 import math
-from typing import Optional
 
+from backend.app.image_client import ImageGenerationError, image_client
 from backend.app.models import Brief, Shot
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -64,8 +68,8 @@ def _default_descriptions(brief: Brief, count: int) -> list[str]:
         f"Product reveal — {brief.product} showcased in ideal setting.",
         f"Benefit demo — audience sees key value delivered to {brief.target_audience}.",
         f"Emotional beat — tone ({brief.tone}) reinforced through character reaction.",
-        f"Social proof — happy users or testimonial moment.",
-        f"Brand integration — logo + tagline introduced naturally.",
+        "Social proof — happy users or testimonial moment.",
+        "Brand integration — logo + tagline introduced naturally.",
         f"Call-to-action — clear directive tailored to {brief.platform} viewer.",
         f"Closing logo card — {brief.brand_name} branding with endcard.",
     ]
@@ -83,37 +87,67 @@ def generate_shot_card(
     brief: Brief,
     description: str,
     *,
-    feedback: Optional[str] = None,
+    feedback: str | None = None,
 ) -> Shot:
     """
     Populate a Shot with generated content.
 
-    STUB IMPLEMENTATION:
-        Returns deterministic placeholder content so the rest of the pipeline
-        can be built and tested without a live image API.
+    Image generation:
+        Delegates to ``image_client.generate_image()``.  In stub mode (no GCP
+        project configured) a deterministic picsum.photos URL is returned and
+        no network call is made.  With GCP configured, a real Vertex AI Imagen
+        call is made and the result is encoded as a base64 data URL.
 
-    Production replacement:
-        Replace `_stub_image_url` and the text fields with calls to:
-        - Gemini Imagen / DALL-E / Stability for images
-        - Gemini / Claude for narrative text
-        The function signature must NOT change.
+    Failure handling:
+        If image generation fails (ImageGenerationError), the Shot is returned
+        with status="failed" so the UI can surface the error and offer a retry.
+        The remaining text fields are *not* populated on failure to avoid a
+        misleading partial result.
 
     Args:
         shot:        The Shot to populate (not mutated — a new Shot is returned).
-        brief:       The session's brief (used to contextualise copy).
+        brief:       The session's brief (used to contextualise copy and image).
         description: High-level description for this shot from the shot plan.
         feedback:    Optional revision feedback from the user.
 
     Returns:
-        A new Shot with status="ready" and all content fields populated.
+        A new Shot with status="ready" and all content fields populated,
+        or status="failed" with dialogue_text containing the error message.
     """
     revision_note = f" [Revision {shot.revision + 1} — feedback: {feedback}]" if feedback else ""
+    new_revision = shot.revision + (1 if feedback else 0)
 
-    populated = shot.model_copy(
+    # Build a rich, structured Imagen prompt from the brief + shot context.
+    image_prompt = _build_image_prompt(brief, description, feedback)
+
+    # Pass a deterministic seed so stub mode returns the same placeholder per
+    # shot/revision combination.  The seed is ignored by real Imagen.
+    stub_seed = shot.index * 100 + shot.revision
+
+    try:
+        image_url = image_client.generate_image(image_prompt, _stub_seed=stub_seed)
+    except ImageGenerationError as exc:
+        # Log the full context server-side; return a clean failure to the caller.
+        logger.error(
+            "Image generation failed for shot %d (revision %d): %s",
+            shot.index,
+            shot.revision,
+            exc,
+        )
+        return shot.model_copy(
+            update={
+                "status": "failed",
+                "revision": new_revision,
+                "dialogue_text": str(exc),
+                "user_feedback": feedback,
+            }
+        )
+
+    return shot.model_copy(
         update={
             "status": "ready",
-            "revision": shot.revision + (1 if feedback else 0),
-            "image_url": _stub_image_url(shot.index, shot.revision),
+            "revision": new_revision,
+            "image_url": image_url,
             "dialogue_text": (
                 f"[{brief.brand_name}] {description}{revision_note} "
                 f"— crafted for {brief.target_audience} with a {brief.tone} feel."
@@ -123,23 +157,33 @@ def generate_shot_card(
             "user_feedback": feedback,
         }
     )
-    return populated
 
 
 # ---------------------------------------------------------------------------
-# Private stub helpers
+# Private helpers
 # ---------------------------------------------------------------------------
 
 
-def _stub_image_url(index: int, revision: int) -> str:
+def _build_image_prompt(brief: Brief, description: str, feedback: str | None) -> str:
     """
-    Return a stable placeholder image URL.
+    Construct a detailed Imagen prompt from the brief and shot description.
 
-    Uses picsum.photos with a deterministic seed so the same shot always
-    returns the same placeholder, and revisions return a different one.
+    The prompt is structured to produce professional advertising imagery.
+    The "no text or logos" instruction avoids Imagen's tendency to render
+    unreadable placeholder text in image content.
     """
-    seed = index * 100 + revision
-    return f"https://picsum.photos/seed/{seed}/1280/720"
+    parts = [
+        f"A professional commercial advertisement photograph for {brief.brand_name},",
+        f"showcasing {brief.product}.",
+        f"Scene: {description}",
+        f"Tone and mood: {brief.tone}.",
+        f"Target audience: {brief.target_audience}.",
+        "Style: cinematic, high-quality advertising photography, clean composition.",
+        "No text, logos, or watermarks in the image.",
+    ]
+    if feedback:
+        parts.append(f"Additional direction: {feedback}.")
+    return " ".join(parts)
 
 
 def _stub_sfx(index: int) -> str:

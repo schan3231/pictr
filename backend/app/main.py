@@ -21,9 +21,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from backend.app.agent import AgentError, StoryboardAgent, agent
+from backend.app.agent import AgentError, agent
 from backend.app.config import settings
-from backend.app.models import Brief, CreateSessionRequest, ErrorResponse, ReviseRequest, Session
+from backend.app.models import Brief, ErrorResponse, ReviseRequest, Session
 from backend.app.store import store
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,9 @@ async def echo(request: Request) -> Any:
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Request body must be valid JSON.")
+        raise HTTPException(
+            status_code=400, detail="Request body must be valid JSON."
+        ) from None
     return body
 
 
@@ -138,7 +140,7 @@ async def echo(request: Request) -> Any:
     summary="Create a new storyboard session",
     tags=["sessions"],
 )
-async def create_session(_body: CreateSessionRequest = CreateSessionRequest()) -> Session:
+async def create_session() -> Session:
     """
     Create a new session in INTAKE phase.
 
@@ -194,9 +196,11 @@ async def submit_message(session_id: str, brief: Brief) -> Session:
     try:
         return agent.submit_brief(session_id, brief)
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+        raise HTTPException(
+            status_code=404, detail=f"Session '{session_id}' not found."
+        ) from None
     except AgentError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post(
@@ -231,9 +235,11 @@ async def generate_shot(session_id: str, shot_index: int) -> Session:
     try:
         return agent.generate_current_shot(session_id)
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+        raise HTTPException(
+            status_code=404, detail=f"Session '{session_id}' not found."
+        ) from None
     except AgentError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post(
@@ -255,9 +261,11 @@ async def approve_shot(session_id: str, shot_index: int) -> Session:
     try:
         return agent.approve_shot(session_id, shot_index)
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+        raise HTTPException(
+            status_code=404, detail=f"Session '{session_id}' not found."
+        ) from None
     except AgentError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post(
@@ -280,6 +288,8 @@ async def revise_shot(session_id: str, shot_index: int, body: ReviseRequest) -> 
     try:
         return agent.request_changes(session_id, shot_index, body.feedback)
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+        raise HTTPException(
+            status_code=404, detail=f"Session '{session_id}' not found."
+        ) from None
     except AgentError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -29,8 +29,17 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
-    # Placeholder for future image-generation API key.
-    # image_api_key: str = ""  # uncomment when needed
+    # ---------------------------------------------------------------------------
+    # Google Cloud / Vertex AI — image generation
+    #
+    # Leave google_cloud_project empty to run in stub mode (picsum placeholders).
+    # Set it to your GCP project ID to enable real Imagen generation.
+    # Auth uses Application Default Credentials (ADC):
+    #   gcloud auth application-default login
+    # ---------------------------------------------------------------------------
+    google_cloud_project: str = ""
+    google_cloud_location: str = "us-central1"
+    image_model: str = "imagen-3.0-generate-001"
 
     @field_validator("allowed_origins", mode="before")
     @classmethod

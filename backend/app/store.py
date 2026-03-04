@@ -14,7 +14,6 @@ Design notes:
 from __future__ import annotations
 
 import threading
-from typing import Optional
 
 from backend.app.models import Session
 
@@ -71,7 +70,7 @@ class SessionStore:
     # Read operations
     # ------------------------------------------------------------------
 
-    def get(self, session_id: str) -> Optional[Session]:
+    def get(self, session_id: str) -> Session | None:
         """
         Return a deep copy of the session, or None if not found.
 

@@ -21,10 +21,10 @@ ADK integration note:
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from backend.app.models import Brief, Session, Shot
-from backend.app.store import SessionStore, store as _default_store
+from backend.app.store import SessionStore
+from backend.app.store import store as _default_store
 from backend.app.tools import generate_shot_card, plan_shot_list
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ class StoryboardAgent:
     state is in the SessionStore).
     """
 
-    def __init__(self, session_store: Optional[SessionStore] = None) -> None:
+    def __init__(self, session_store: SessionStore | None = None) -> None:
         # Allow injection for testing; fall back to the module-level singleton.
         self._store = session_store or _default_store
 
