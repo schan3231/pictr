@@ -20,8 +20,9 @@
 12. [Linting & Formatting](#linting--formatting)
 13. [Configuration](#configuration)
 14. [Vertex AI Setup](#vertex-ai-setup)
-15. [Troubleshooting](#troubleshooting)
-16. [Design Decisions](#design-decisions)
+15. [Optional: Firestore Persistence](#optional-firestore-persistence)
+16. [Troubleshooting](#troubleshooting)
+17. [Design Decisions](#design-decisions)
 
 ---
 
@@ -475,6 +476,45 @@ Or add them to your `.env` file at the repo root.
 curl -s -X POST http://localhost:8000/session | python3 -c "import sys,json; sid=json.load(sys.stdin)['session_id']; print(sid)"
 # Use the returned session_id in subsequent calls
 ```
+
+---
+
+## Optional: Firestore Persistence
+
+By default, sessions are held in-memory and lost on restart. Enable Firestore to persist sessions across restarts and share them between processes.
+
+### Named database
+
+This project uses a **named** Firestore database (not the `(default)` database):
+
+| Setting | Value |
+|---|---|
+| Database ID | `pictr-tubi` |
+| Project | `pictr-488900` |
+| Location | `nam5` (US multi-region) |
+
+### Setup
+
+**1. Authenticate** (same ADC credentials used for Vertex AI):
+
+```bash
+gcloud auth application-default login
+```
+
+**2. Set environment variables** (or add to `.env`):
+
+```bash
+USE_FIRESTORE=true
+GOOGLE_CLOUD_PROJECT=pictr-488900
+
+# Optional — defaults shown
+FIRESTORE_DATABASE=pictr-tubi
+FIRESTORE_COLLECTION=sessions
+```
+
+**3. Restart the backend.** Sessions will now be read from and written to Firestore on every operation.
+
+When `USE_FIRESTORE=false` (default), the app runs entirely in-memory with no GCP dependency — no Firestore credentials needed.
 
 ---
 
