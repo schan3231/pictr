@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import { SESSION_KEY, SessionControls } from "./components/SessionControls";
 import { BriefForm } from "./components/BriefForm";
+import { PlanningPanel } from "./components/PlanningPanel";
 import { ShotList } from "./components/ShotList";
 import { ShotCard } from "./components/ShotCard";
 import { StoryboardGrid } from "./components/StoryboardGrid";
@@ -24,7 +25,7 @@ export default function App() {
     try {
       const updated = await fn();
       setSession(updated);
-      if (focusIndex !== undefined) {
+      if (focusIndex !== undefined && updated.shots.length > 0) {
         setSelectedShotIndex(Math.min(focusIndex, updated.shots.length - 1));
       }
     } catch (err) {
@@ -96,6 +97,24 @@ export default function App() {
     [session],
   );
 
+  const handleSendPlanningMessage = useCallback(
+    (message: string) => {
+      if (!session) return;
+      run(() => api.sendPlanningMessage(session.session_id, message));
+    },
+    [session],
+  );
+
+  const handleGeneratePlan = useCallback(() => {
+    if (!session) return;
+    run(() => api.generatePlan(session.session_id));
+  }, [session]);
+
+  const handleApprovePlan = useCallback(() => {
+    if (!session) return;
+    run(() => api.approvePlan(session.session_id), 0);
+  }, [session]);
+
   const showShotCard =
     session?.phase === "STORYBOARD" &&
     session.shots.length > 0 &&
@@ -124,6 +143,10 @@ export default function App() {
             <BriefForm loading={loading} onSubmit={handleSubmitBrief} />
           )}
 
+          {session?.phase === "PLANNING" && session.brief && (
+            <BriefSummary brief={session.brief} />
+          )}
+
           {session?.phase === "STORYBOARD" && session.brief && (
             <BriefSummary brief={session.brief} />
           )}
@@ -143,8 +166,18 @@ export default function App() {
 
           {session?.phase === "INTAKE" && (
             <div style={{ color: "var(--muted)", padding: "40px 0", textAlign: "center" }}>
-              Fill in the creative brief to generate your storyboard.
+              Fill in the creative brief to start planning your storyboard.
             </div>
+          )}
+
+          {session?.phase === "PLANNING" && (
+            <PlanningPanel
+              session={session}
+              loading={loading}
+              onSendMessage={handleSendPlanningMessage}
+              onGeneratePlan={handleGeneratePlan}
+              onApprovePlan={handleApprovePlan}
+            />
           )}
 
           {session?.phase === "STORYBOARD" && (

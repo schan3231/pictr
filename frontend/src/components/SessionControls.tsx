@@ -32,16 +32,31 @@ export function SessionControls({
               📋
             </button>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <span
               className="chip"
               style={{
-                background: session.phase === "INTAKE" ? "#1e3a5f" : "#14532d",
-                color: session.phase === "INTAKE" ? "#60a5fa" : "#22c55e",
+                background:
+                  session.phase === "INTAKE"
+                    ? "#1e3a5f"
+                    : session.phase === "PLANNING"
+                    ? "#3b1a6b"
+                    : "#14532d",
+                color:
+                  session.phase === "INTAKE"
+                    ? "#60a5fa"
+                    : session.phase === "PLANNING"
+                    ? "#c084fc"
+                    : "#22c55e",
               }}
             >
               {session.phase}
             </span>
+            {session.phase === "PLANNING" && (
+              <span className="muted" style={{ fontSize: 12 }}>
+                Plan: {session.plan_status}
+              </span>
+            )}
             {session.phase === "STORYBOARD" && (
               <span className="muted" style={{ fontSize: 12 }}>
                 {session.current_shot_index >= session.shots.length

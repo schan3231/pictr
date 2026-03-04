@@ -401,3 +401,126 @@ textarea {
   color: #34d399;
   font-weight: 600;
 }
+
+/* ── Planning phase ── */
+
+.planning-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 4px 2px;
+  scroll-behavior: smooth;
+}
+
+.planning-message {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.planning-message-role {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.planning-message.user .planning-message-role {
+  color: var(--accent);
+  text-align: right;
+}
+
+.planning-message.assistant .planning-message-role {
+  color: var(--muted);
+}
+
+.planning-message-content {
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.planning-message.user .planning-message-content {
+  background: rgba(250, 45, 45, 0.08);
+  border-color: rgba(250, 45, 45, 0.25);
+  text-align: right;
+}
+
+.planning-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.planning-input-row textarea {
+  flex: 1;
+  min-height: 48px;
+  max-height: 120px;
+  resize: vertical;
+}
+
+/* ── Plan summary ── */
+
+.plan-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.plan-summary-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.plan-logline {
+  font-size: 13px;
+  color: var(--muted);
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.plan-beats-list,
+.plan-shots-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.plan-beat,
+.plan-shot-item {
+  padding: 8px 12px;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.plan-beat-name,
+.plan-shot-title {
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.plan-beat-desc,
+.plan-shot-purpose {
+  color: var(--muted);
+}
+
+.plan-shot-index {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin-bottom: 3px;
+}
