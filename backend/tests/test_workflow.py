@@ -2,11 +2,11 @@
 Integration tests for the full storyboard workflow.
 
 Coverage targets:
-- Happy path: brief → shot list → generate → approve → next shot
+- Happy path: brief → planning → approve plan → generate → approve → next shot
 - Status gating: cannot approve a draft shot; cannot generate a ready/approved shot
 - Retroactive editing: revise + regenerate any shot; pointer only resets for current/future shots
 - Revision cycle: revise → regenerate increments revision counter
-- Phase gating: cannot submit brief twice; cannot generate in INTAKE phase
+- Phase gating: cannot submit brief twice; cannot generate before plan is approved
 - Input validation: empty feedback rejected; blank brief fields rejected
 """
 
@@ -36,8 +36,22 @@ def _create_session(client: TestClient) -> str:
 
 
 def _submit_brief(client: TestClient, session_id: str, brief: dict = VALID_BRIEF) -> dict:
-    """Submit a brief and return the updated session body."""
+    """Submit a brief (INTAKE → PLANNING) and return the updated session body."""
     resp = client.post(f"/session/{session_id}/message", json=brief)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _complete_planning(client: TestClient, session_id: str) -> dict:
+    """
+    Advance from PLANNING phase to STORYBOARD via plan generate + approve.
+
+    The stub llm_client (from conftest) returns a deterministic 3-shot plan,
+    so tests that call this helper always start STORYBOARD with 3 shots.
+    """
+    resp = client.post(f"/session/{session_id}/planning/plan")
+    assert resp.status_code == 200, resp.text
+    resp = client.post(f"/session/{session_id}/planning/approve")
     assert resp.status_code == 200, resp.text
     return resp.json()
 
@@ -64,27 +78,30 @@ def _revise(client: TestClient, session_id: str, shot_index: int, feedback: str)
 
 
 # ---------------------------------------------------------------------------
-# Brief submission
+# Brief submission  (INTAKE → PLANNING)
 # ---------------------------------------------------------------------------
 
 
 class TestSubmitBrief:
-    def test_submit_brief_transitions_to_storyboard(self, client: TestClient) -> None:
+    def test_submit_brief_transitions_to_planning(self, client: TestClient) -> None:
+        """Brief submission now moves to PLANNING (not directly to STORYBOARD)."""
         sid = _create_session(client)
         body = _submit_brief(client, sid)
-        assert body["phase"] == "STORYBOARD"
+        assert body["phase"] == "PLANNING"
 
-    def test_submit_brief_creates_shots(self, client: TestClient) -> None:
+    def test_submit_brief_no_shots_yet(self, client: TestClient) -> None:
+        """Shots are not created until the plan is approved; PLANNING starts empty."""
         sid = _create_session(client)
         body = _submit_brief(client, sid)
-        # 30s ÷ 5 = 6 shots (capped between 3 and 8)
-        assert len(body["shots"]) == 6
+        assert body["phase"] == "PLANNING"
+        assert body["shots"] == []
 
-    def test_submit_brief_shots_are_draft(self, client: TestClient) -> None:
+    def test_submit_brief_adds_welcome_message(self, client: TestClient) -> None:
+        """Brief submission seeds planning_messages with an assistant welcome turn."""
         sid = _create_session(client)
         body = _submit_brief(client, sid)
-        for shot in body["shots"]:
-            assert shot["status"] == "draft"
+        assert len(body["planning_messages"]) >= 1
+        assert body["planning_messages"][0]["role"] == "assistant"
 
     def test_submit_brief_stores_brief(self, client: TestClient) -> None:
         sid = _create_session(client)
@@ -129,7 +146,7 @@ class TestSubmitBrief:
 
 
 # ---------------------------------------------------------------------------
-# Shot generation
+# Shot generation  (requires STORYBOARD phase — complete planning first)
 # ---------------------------------------------------------------------------
 
 
@@ -137,12 +154,14 @@ class TestGenerateShot:
     def test_generate_shot_zero(self, client: TestClient) -> None:
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         body = _generate(client, sid, 0)
         assert body["shots"][0]["status"] == "ready"
 
     def test_generate_populates_all_card_fields(self, client: TestClient) -> None:
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         body = _generate(client, sid, 0)
         shot = body["shots"][0]
         assert shot["image_url"] is not None
@@ -156,10 +175,18 @@ class TestGenerateShot:
         resp = client.post(f"/session/{sid}/shots/0/generate")
         assert resp.status_code == 400
 
+    def test_cannot_generate_before_plan_approved(self, client: TestClient) -> None:
+        """Phase gate: cannot generate in PLANNING phase (plan not yet approved)."""
+        sid = _create_session(client)
+        _submit_brief(client, sid)
+        resp = client.post(f"/session/{sid}/shots/0/generate")
+        assert resp.status_code == 400
+
     def test_can_generate_non_current_draft_shot_directly(self, client: TestClient) -> None:
         """Retroactive: generating a non-current shot is allowed if status permits."""
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         # Shot 0 is draft — generate shot 0, approve it, then revise shot 0 retroactively
         _generate(client, sid, 0)
         _approve(client, sid, 0)
@@ -172,6 +199,7 @@ class TestGenerateShot:
         """Status gate: approved shots cannot be re-generated without first revising."""
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         _generate(client, sid, 0)
         _approve(client, sid, 0)
         # Approved shot — direct generate should be rejected
@@ -192,6 +220,7 @@ class TestApproveShot:
     def test_approve_advances_index(self, client: TestClient) -> None:
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         _generate(client, sid, 0)
         body = _approve(client, sid, 0)
         assert body["current_shot_index"] == 1
@@ -199,6 +228,7 @@ class TestApproveShot:
     def test_approve_sets_status(self, client: TestClient) -> None:
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         _generate(client, sid, 0)
         body = _approve(client, sid, 0)
         assert body["shots"][0]["status"] == "approved"
@@ -207,14 +237,16 @@ class TestApproveShot:
         """Status gate: shot must be 'ready' to approve."""
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         # Shot is still 'draft' — not yet generated
         resp = client.post(f"/session/{sid}/shots/0/approve")
         assert resp.status_code == 400
 
     def test_cannot_approve_before_generate(self, client: TestClient) -> None:
-        """Same as above — ensure draft → approve is blocked."""
+        """Same as above — ensure draft → approve is blocked with 'ready' in detail."""
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         resp = client.post(f"/session/{sid}/shots/0/approve")
         assert resp.status_code == 400
         assert "ready" in resp.json()["detail"].lower()
@@ -222,6 +254,7 @@ class TestApproveShot:
     def test_cannot_approve_out_of_range_index(self, client: TestClient) -> None:
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         resp = client.post(f"/session/{sid}/shots/99/approve")
         assert resp.status_code == 400
 
@@ -239,6 +272,7 @@ class TestReviseShot:
     def test_revise_sets_needs_changes(self, client: TestClient) -> None:
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         _generate(client, sid, 0)
         body = _revise(client, sid, 0, "Make it more dramatic")
         assert body["shots"][0]["status"] == "needs_changes"
@@ -246,6 +280,7 @@ class TestReviseShot:
     def test_revise_attaches_feedback(self, client: TestClient) -> None:
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         _generate(client, sid, 0)
         body = _revise(client, sid, 0, "More colour please")
         assert body["shots"][0]["user_feedback"] == "More colour please"
@@ -254,6 +289,7 @@ class TestReviseShot:
         """Revising the current shot keeps current_shot_index pointing at it."""
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         _generate(client, sid, 0)
         body = _revise(client, sid, 0, "Needs work")
         # current_shot_index was 0, shot_index is 0 (≥ current), so pointer stays 0
@@ -262,6 +298,7 @@ class TestReviseShot:
     def test_regenerate_after_revise_increments_revision(self, client: TestClient) -> None:
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         _generate(client, sid, 0)
         _revise(client, sid, 0, "Go again")
         body = _generate(client, sid, 0)
@@ -270,6 +307,7 @@ class TestReviseShot:
     def test_revise_empty_feedback_rejected(self, client: TestClient) -> None:
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         _generate(client, sid, 0)
         resp = client.post(
             f"/session/{sid}/shots/0/revise",
@@ -280,6 +318,7 @@ class TestReviseShot:
     def test_revise_whitespace_only_feedback_rejected(self, client: TestClient) -> None:
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         _generate(client, sid, 0)
         resp = client.post(
             f"/session/{sid}/shots/0/revise",
@@ -291,6 +330,7 @@ class TestReviseShot:
         """Retroactive editing: revising an approved shot is permitted."""
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
         _generate(client, sid, 0)
         _approve(client, sid, 0)
         body = _revise(client, sid, 0, "Redo with warmer lighting")
@@ -300,8 +340,9 @@ class TestReviseShot:
     def test_revise_past_shot_does_not_roll_back_pointer(self, client: TestClient) -> None:
         """Retroactive editing: revising a past shot must NOT reset current_shot_index."""
         sid = _create_session(client)
-        brief = {**VALID_BRIEF, "duration_seconds": 15}  # 3 shots
-        _submit_brief(client, sid, brief)
+        # The stub plan always returns 3 shots — no need to set duration_seconds.
+        _submit_brief(client, sid)
+        _complete_planning(client, sid)
         _generate(client, sid, 0)
         _approve(client, sid, 0)
         _generate(client, sid, 1)
@@ -327,16 +368,14 @@ class TestReviseShot:
 class TestFullWorkflow:
     def test_two_shot_complete_sequence(self, client: TestClient) -> None:
         """
-        End-to-end: create → brief → generate[0] → approve[0]
-                    → generate[1] → approve[1].
+        End-to-end: create → brief → complete planning
+                    → generate[0] → approve[0] → generate[1] → approve[1].
 
-        Uses a 10-second brief so we get exactly 2 shots (10 ÷ 5 = 2,
-        but capped at min 3 by plan_shot_list).  Use 15s to get 3 shots
-        and only run through the first two to keep the test concise.
+        The stub plan always provides 3 shots; we run through the first two.
         """
         sid = _create_session(client)
-        brief = {**VALID_BRIEF, "duration_seconds": 15}  # 3 shots
-        _submit_brief(client, sid, brief)
+        _submit_brief(client, sid)
+        _complete_planning(client, sid)
 
         # Shot 0
         s = _generate(client, sid, 0)
@@ -356,6 +395,7 @@ class TestFullWorkflow:
         """Revise shot 0, regenerate it, approve, then proceed to shot 1."""
         sid = _create_session(client)
         _submit_brief(client, sid)
+        _complete_planning(client, sid)
 
         _generate(client, sid, 0)
         _revise(client, sid, 0, "Needs more energy")

@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     google_cloud_location: str = "us-central1"
     image_model: str = "imagen-3.0-generate-001"
 
+    # ---------------------------------------------------------------------------
+    # Google Cloud / Vertex AI — LLM (Gemini) for planning phase
+    #
+    # Reuses google_cloud_project / google_cloud_location from above.
+    # Auth uses Application Default Credentials (ADC):
+    #   gcloud auth application-default login
+    # ---------------------------------------------------------------------------
+    gemini_model: str = "gemini-2.0-flash-001"
+
     @field_validator("allowed_origins", mode="before")
     @classmethod
     def parse_origins(cls, v: object) -> object:
