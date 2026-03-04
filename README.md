@@ -1,491 +1,244 @@
-# Pictr Storyboard Agent
+# PICTr — AI Storyboard Generator
 
-> **Tubi Take-Home MVP** — Generate a 30-second commercial storyboard from a creative brief, with AI-assisted planning and per-shot iterative approval.
+> **Tubi Builders Program submission** — Generate professional commercial storyboards from a creative brief using Gemini for planning and Imagen for image generation.
 
 ---
 
 ## Table of Contents
 
-1. [Overview](#overview)
-2. [Workflow](#workflow)
-3. [Planning Phase (Gemini)](#planning-phase-gemini)
-4. [Storyboard Phase (Imagen)](#storyboard-phase-imagen)
-5. [Architecture](#architecture)
-6. [Project Structure](#project-structure)
-7. [Quickstart](#quickstart)
-8. [Running the Frontend](#running-the-frontend)
-9. [End-to-End Demo](#end-to-end-demo)
-10. [API Reference](#api-reference)
-11. [Running Tests](#running-tests)
-12. [Linting & Formatting](#linting--formatting)
-13. [Configuration](#configuration)
-14. [Vertex AI Setup](#vertex-ai-setup)
-15. [Optional: Firestore Persistence](#optional-firestore-persistence)
-16. [Troubleshooting](#troubleshooting)
-17. [Design Decisions](#design-decisions)
+1. [Project Overview](#1-project-overview)
+2. [Product Workflow](#2-product-workflow)
+3. [System Architecture](#3-system-architecture)
+4. [Architecture Diagrams](#4-architecture-diagrams)
+5. [Local Setup](#5-local-setup)
+6. [Vertex AI Setup](#6-vertex-ai-setup)
+7. [Firestore Persistence](#7-firestore-persistence)
+8. [End-to-End Demo](#8-end-to-end-demo)
+9. [Design Decisions](#9-design-decisions)
+10. [Tradeoffs](#10-tradeoffs)
+11. [Phase 2 Roadmap](#11-phase-2-roadmap)
 
 ---
 
-## Overview
+## 1. Project Overview
 
-Pictr lets a user describe an advertising brief (brand, product, audience, tone) and then iteratively builds a storyboard — one shot card at a time.  Each Shot Card is an atomic unit containing:
+Creating a commercial storyboard today requires a creative director, a copywriter, a storyboard artist, and days of back-and-forth.  PICTr compresses that process into minutes.
 
-- Generated image (`image_url`)
-- Example voiceover / dialogue (`dialogue_text`)
-- Sound-effects guidance (`sfx_notes`)
-- Camera motion notes (`camera_notes`)
+A user submits a creative brief — brand, product, audience, tone — and the system uses **Gemini** to co-develop the narrative arc through a conversational planning interface.  Once the plan is approved, **Imagen** generates a shot card for each scene: image, voiceover, sound effects, and camera notes.  The user reviews each shot in sequence and either approves it or requests a revision before moving on.
 
-The user reviews each shot and either **approves** it or **requests changes**; the agent cannot advance to the next shot until the current one is approved (sequential gating).
+The result is a complete, visually-grounded storyboard ready to hand off to a production team.
+
+**Stack:** Python 3.11 / FastAPI · React + Vite + TypeScript · Google Vertex AI (Gemini + Imagen) · Google Cloud Firestore
 
 ---
 
-## Workflow
+## 2. Product Workflow
+
+*This section is the demo guide — each step maps to a UI interaction.*
 
 ```
-INTAKE ──► PLANNING ──► STORYBOARD
-  │            │              │
-  │   Submit   │  Chat with   │  Generate,
-  │   Brief    │  AI planner, │  approve, or
-  │            │  generate &  │  revise each
-  │            │  approve     │  shot in order
-  │            │  plan        │
-  ▼            ▼              ▼
-Brief       Draft plan     Shot cards
-collected   reviewed       produced
+ 1  Submit Brief          Enter brand, product, audience, tone, platform, duration
+         ↓
+ 2  Planning Chat         Chat with the Gemini creative director to shape the narrative
+         ↓
+ 3  Generate Plan         Gemini produces a structured StoryboardPlan (beats + shots)
+         ↓
+ 4  Approve Plan          Review and lock the plan; shot placeholders are created
+         ↓
+ 5  Generate Shot         Imagen produces image + voiceover + sfx + camera notes
+         ↓
+ 6  Approve / Revise      Approve to advance, or request changes with feedback
+         ↓
+ 7  Complete Storyboard   All shots approved — view the storyboard grid
 ```
 
-The three phases are enforced server-side and the frontend mirrors the current phase automatically:
-
-| Phase | What happens |
-|---|---|
-| **INTAKE** | User fills in the creative brief |
-| **PLANNING** | User chats with the AI creative director (Gemini), generates a storyboard plan, and approves it |
-| **STORYBOARD** | System creates shot placeholders from the plan; user generates, approves, or revises each shot sequentially (Imagen) |
+**Phase gates are enforced server-side.** You cannot generate a shot until the plan is approved, and you cannot advance to the next shot until the current one is approved.
 
 ---
 
-## Planning Phase (Gemini)
+## 3. System Architecture
 
-After submitting the brief, the session enters the **PLANNING** phase:
+| Layer | Technology | Responsibility |
+|---|---|---|
+| **Frontend** | React + Vite + TypeScript | Session management, phase-aware UI, API calls via `fetch()` |
+| **API** | FastAPI + Uvicorn | HTTP routing, request validation, error handling, CORS |
+| **Agent** | `StoryboardAgent` | Workflow orchestration, phase gate enforcement, LLM/tool dispatch |
+| **Tools** | `tools.py` | Shot card generation — pure functions, no store side-effects |
+| **LLM Client** | `GeminiClient` | Gemini via Vertex AI; planning chat + structured plan generation |
+| **Image Client** | `ImageClient` | Imagen via Vertex AI; returns base64 data URL or stub placeholder |
+| **Persistence** | `SessionStore` / `FirestoreSessionStore` | Thread-safe session storage, swappable via `USE_FIRESTORE` flag |
 
-1. **Chat** — An AI creative director (powered by Gemini) is pre-seeded with the brief. The user can ask questions, share ideas, or describe the mood they want. The conversation guides the final plan.
-2. **Generate Plan** — When the user is satisfied, they click "Generate Storyboard Plan". Gemini produces a structured `StoryboardPlan` with:
-   - Title and logline
-   - Narrative beats (e.g., Hook → Problem → Solution → CTA)
-   - Per-shot intent: title, purpose, visual description, camera hints, dialogue hints, and an `image_prompt` used later by Imagen
-3. **Review** — The plan is displayed in the UI as a draft. The user can continue chatting and regenerate if needed.
-4. **Approve Plan** — Approving locks the plan and creates shot placeholder records. The session transitions to `STORYBOARD`.
-
-> The `image_prompt` field in each planned shot is passed directly to Imagen during shot generation, resulting in higher-quality, narratively coherent images compared to a generic prompt.
-
----
-
-## Storyboard Phase (Imagen)
-
-Once a plan is approved, the session is in the **STORYBOARD** phase:
-
-1. **Generate Shot** — Click "⚡ Generate Shot N" to call Vertex AI Imagen. The shot card updates with an image, dialogue, SFX notes, and camera notes.
-2. **Approve** — Click "✓ Approve" to advance the sequential pointer to the next shot. Only the current shot (or a complete storyboard) allows approval.
-3. **Revise** — Click "✎ Revise", enter feedback, and submit. The shot status changes to `needs_changes`. Regenerating passes the stored feedback back to the generation tool.
-4. **Retroactive editing** — After the storyboard is complete, any shot can be revised and regenerated. The sequential pointer does not roll back for past shots.
-
----
-
-## Architecture
+**Request flow:**
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Browser  (React / Vite)                                 │
-│  • INTAKE: BriefForm                                     │
-│  • PLANNING: PlanningPanel (chat + plan approval)        │
-│  • STORYBOARD: ShotCard + StoryboardGrid                 │
-└────────────────────┬─────────────────────────────────────┘
-                     │  HTTP (JSON)
-┌────────────────────▼─────────────────────────────────────┐
-│  FastAPI  (backend/app/main.py)                          │
-│  • /health  /echo  /session  /session/{id}               │
-│  • /session/{id}/planning/*  (message, plan, approve)    │
-│  • /session/{id}/shots/{i}/* (generate, approve, revise) │
-│  • Input validation via Pydantic                         │
-│  • Consistent error payloads; no stack traces exposed    │
-└────┬──────────────────────┬───────────────────────────────┘
-     │                      │
-     ▼                      ▼
-┌─────────────┐    ┌──────────────────────────────────────┐
-│ SessionStore│    │  StoryboardAgent  (agent.py)         │
-│ (store.py)  │    │  • Phase transitions (INTAKE →       │
-│ thread-safe │◄───│    PLANNING → STORYBOARD)            │
-│ in-memory   │    │  • Sequential shot gating            │
-│ dict+Lock   │    │  • Calls tool functions              │
-└─────────────┘    └──────────────┬───────────────────────┘
-                                  │
-                    ┌─────────────┴───────────────┐
-                    │                             │
-                    ▼                             ▼
-       ┌────────────────────┐     ┌──────────────────────────┐
-       │  LLMClient         │     │  Tools  (tools.py)       │
-       │  (llm_client.py)   │     │  • generate_shot_card()  │
-       │  Gemini via        │     │  Pure functions; no I/O  │
-       │  Vertex AI         │     └──────────────────────────┘
-       │  • planning chat   │
-       │  • plan generation │
-       └────────────────────┘
-                    │
-                    ▼
-       ┌────────────────────┐
-       │  ImageClient       │
-       │  (image_client.py) │
-       │  Vertex AI Imagen  │
-       │  • shot images     │
-       │  • stub fallback   │
-       └────────────────────┘
-```
-
-**Key boundary rules:**
-
-| Layer | Responsibility |
-|---|---|
-| `main.py` | HTTP request/response, CORS |
-| `agent.py` | Workflow logic, phase enforcement, orchestration |
-| `llm_client.py` | Gemini API calls (planning chat + plan generation) |
-| `tools.py` | Deterministic shot card generation — no session state |
-| `image_client.py` | Vertex AI Imagen wrapper with stub fallback |
-| `store.py` | Persistence — swap to Redis/DB without touching other layers |
-| `models.py` | Shared types — imported by all layers |
-
----
-
-## Project Structure
-
-```
-pictr/
-├── backend/
-│   ├── app/
-│   │   ├── main.py         # FastAPI app, routes, middleware
-│   │   ├── models.py       # Pydantic domain models (Session, Brief, Shot, Plan)
-│   │   ├── store.py        # Thread-safe in-memory session store
-│   │   ├── agent.py        # StoryboardAgent orchestration
-│   │   ├── tools.py        # Tool functions (shot card generation)
-│   │   ├── llm_client.py   # Gemini LLM client (planning chat + plan generation)
-│   │   ├── image_client.py # Vertex AI Imagen wrapper (stub fallback)
-│   │   └── config.py       # Settings loaded from environment
-│   └── tests/
-│       ├── conftest.py     # Shared fixtures (isolated TestClient)
-│       ├── test_health.py
-│       ├── test_sessions.py
-│       ├── test_planning.py   # Planning phase tests (chat, plan, approve)
-│       ├── test_workflow.py
-│       └── test_image_client.py
-├── frontend/
-│   ├── src/
-│   │   ├── types.ts        # TS mirrors of backend Pydantic models
-│   │   ├── api.ts          # fetch() wrappers for all endpoints
-│   │   ├── styles.css      # Dark Tubi-inspired theme (CSS variables)
-│   │   ├── main.tsx        # Vite entry point
-│   │   ├── App.tsx         # Layout shell + state root
-│   │   └── components/
-│   │       ├── SessionControls.tsx
-│   │       ├── BriefForm.tsx
-│   │       ├── PlanningPanel.tsx  # PLANNING: chat + plan generation/approval
-│   │       ├── PlanSummary.tsx    # Read-only plan visualization
-│   │       ├── ShotList.tsx
-│   │       ├── ShotCard.tsx
-│   │       ├── StoryboardGrid.tsx
-│   │       └── Toast.tsx
-│   ├── .env.example        # VITE_API_BASE_URL=http://localhost:8000
-│   ├── package.json
-│   ├── tsconfig.json
-│   └── vite.config.ts
-├── .env.example            # Backend env vars — copy to .env
-├── .gitignore
-├── LICENSE                 # MIT
-├── Makefile
-├── pyproject.toml          # Dependencies + ruff/black/pytest config
-├── README.md
-└── SECURITY.md
+Browser  →  React UI  →  FastAPI  →  StoryboardAgent  →  GeminiClient / ImageClient  →  Vertex AI
+                                           ↓
+                                    SessionStore (Memory or Firestore)
 ```
 
 ---
 
-## Quickstart
+## 4. Architecture Diagrams
+
+### Component Layout
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    User Browser                     │
+│   ┌──────────────────┐  ┌────────────────────────┐  │
+│   │   Left Panel     │  │      Right Panel       │  │
+│   │ Session Controls │  │  Planning Chat /       │  │
+│   │ Brief Summary    │  │  Storyboard Grid /     │  │
+│   │ Shot List        │  │  Shot Card Detail      │  │
+│   └────────┬─────────┘  └───────────┬────────────┘  │
+└────────────┼───────────────────────-┼───────────────┘
+             │       React (Vite)     │
+             └───────────┬────────────┘
+                         │ fetch() / JSON
+                         ▼
+              ┌──────────────────────┐
+              │   FastAPI Backend    │
+              │  (uvicorn, :8000)    │
+              └──────────┬───────────┘
+                         │
+                ┌────────┴────────┐
+                ▼                 ▼
+        ┌──────────────┐  ┌──────────────────┐
+        │ Storyboard   │  │  SessionStore    │
+        │ Agent        │  │ (Mem/Firestore)  │
+        └──────┬───────┘  └──────────────────┘
+               │
+      ┌────────┴─────────┐
+      ▼                  ▼
+┌──────────────┐   ┌─────────────────┐
+│ GeminiClient │   │  ImageClient    │
+│  (planning)  │   │  (generation)   │
+└──────┬───────┘   └───────┬─────────┘
+       │                   │
+       └─────────┬──────────┘
+                 ▼
+      ┌───────────────────────┐
+      │   Google Vertex AI    │
+      │   Gemini  +  Imagen   │
+      └───────────────────────┘
+```
+
+### Session State Machine
+
+```
+  ┌─────────┐  submit_brief   ┌──────────┐  approve_plan   ┌────────────┐
+  │  INTAKE │ ──────────────► │ PLANNING │ ──────────────► │ STORYBOARD │
+  └─────────┘                 └──────────┘                 └────────────┘
+```
+
+### Shot State Machine
+
+```
+  draft ──► ready ──► approved
+               │
+               ▼
+         needs_changes ──► (regenerate) ──► ready
+               │
+          failed ──► (retry) ──► ready
+```
+
+---
+
+## 5. Local Setup
 
 ### Prerequisites
 
 - Python 3.11+
+- Node.js 18+
+- `make` (optional)
 
-### 1. Clone and set up environment
+### Backend
 
 ```bash
+# 1. Clone
 git clone <repo-url>
 cd pictr
 
-# Create and activate virtualenv
+# 2. Create virtual environment
 python3.11 -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-# Install (includes dev dependencies)
+# 3. Install (editable + dev deps)
 pip install -e ".[dev]"
-```
 
-### 2. Configure environment
-
-```bash
-cp .env.example .env
-# Edit .env if you need non-default CORS origins or GCP settings
-```
-
-### 3. Run the server
-
-```bash
+# 4. Start backend
 make dev
-# or directly:
-uvicorn backend.app.main:app --reload
+# or: uvicorn backend.app.main:app --reload --port 8000
 ```
 
-Server starts at **http://localhost:8000**
+API at `http://localhost:8000` · Interactive docs at `http://localhost:8000/docs`
 
-Swagger UI: **http://localhost:8000/docs**
-
-### 4. Quick smoke test
-
-```bash
-curl http://localhost:8000/health
-# {"ok":true}
-
-curl -s -X POST http://localhost:8000/session | python3 -m json.tool
-# Returns a Session object with a fresh session_id
-```
-
----
-
-## Running the Frontend
-
-### Prerequisites
-
-- Node.js 18+ and npm
-
-### Setup
+### Frontend
 
 ```bash
 cd frontend
-cp .env.example .env    # defaults to http://localhost:8000
 npm install
-npm run dev             # Vite dev server at http://localhost:5173
+npm run dev
 ```
 
-Production build:
+Open `http://localhost:5173`
+
+### Tests and Linting
 
 ```bash
-npm run build           # output in frontend/dist/
+make test     # pytest (107 tests)
+make lint     # ruff
+make check    # lint + format check (CI-safe)
 ```
 
 ---
 
-## End-to-End Demo
+## 6. Vertex AI Setup
 
-Run both servers simultaneously:
+PICTr ships with **stub mode** enabled by default:
 
-```bash
-# Terminal 1 — backend
-make dev               # FastAPI on http://localhost:8000
+- **Gemini not configured** → planning endpoints return `503`
+- **Imagen not configured** → shot images use `picsum.photos` placeholders
 
-# Terminal 2 — frontend
-cd frontend && npm run dev   # Vite on http://localhost:5173
-```
+The full UI and storyboard workflow are usable in stub mode without any GCP account.
 
-Then open **http://localhost:5173** and follow these steps:
+### Enable real AI generation
 
-1. **Create a session** — Click "New Session". The session ID appears in the left panel and is persisted in `localStorage` so a page refresh restores it.
-2. **Submit the brief** — Fill in brand name, product, audience, tone, platform, and duration, then click "Start Planning". The session enters the **PLANNING** phase.
-3. **Chat with the AI planner** — Type messages in the planning chat to share ideas, refine the concept, or ask questions. The AI creative director replies based on your brief.
-4. **Generate the plan** — Click "✦ Generate Storyboard Plan". Gemini produces a structured plan with narrative beats and per-shot intent.
-5. **Review and approve** — Review the plan summary. If satisfied, click "✓ Approve Plan — Begin Shot Generation". The session transitions to **STORYBOARD**.
-6. **Generate Shot 1** — Click "⚡ Generate Shot 1". The shot card updates with an image (or placeholder in stub mode), dialogue, SFX notes, and camera notes.
-7. **Approve or revise** — Click "✓ Approve" to move to the next shot, or "✎ Revise" to enter feedback and regenerate.
-8. **Repeat** until all shots are approved. A completion banner confirms the storyboard is done.
-
-> **Stub mode** (no GCP): images are deterministic picsum.photos placeholders — no API key needed for a full demo run. Planning chat (Gemini) requires GCP credentials; without them you'll receive a 503 response for planning actions.
-
----
-
-## API Reference
-
-### Meta
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Liveness probe — returns `{"ok": true}` |
-| `POST` | `/echo` | Returns the request body unchanged (debug helper) |
-
-### Sessions
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/session` | Create a new session in INTAKE phase |
-| `GET` | `/session/{session_id}` | Retrieve session state |
-
-**Session object shape:**
-
-```json
-{
-  "session_id": "uuid4",
-  "phase": "INTAKE",
-  "brief": null,
-  "planning_messages": [],
-  "plan": null,
-  "plan_status": "none",
-  "shots": [],
-  "current_shot_index": 0,
-  "created_at": "2026-03-03T00:00:00+00:00",
-  "updated_at": "2026-03-03T00:00:00+00:00"
-}
-```
-
-**Error response shape (all endpoints):**
-
-```json
-{ "detail": "Human-readable error message" }
-```
-
-### Brief
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/session/{session_id}/message` | Submit creative brief — INTAKE → PLANNING |
-
-### Planning
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/session/{session_id}/planning/message` | Send user message; AI replies. Phase: PLANNING |
-| `POST` | `/session/{session_id}/planning/plan` | Generate StoryboardPlan from brief + conversation. Sets `plan_status = "draft"` |
-| `POST` | `/session/{session_id}/planning/approve` | Approve draft plan — PLANNING → STORYBOARD. Creates shot placeholders |
-
-Planning endpoints return `503` if the Gemini LLM is unavailable or misconfigured.
-
-### Shots
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/session/{session_id}/shots/{index}/generate` | Generate shot card (image + text). Phase: STORYBOARD, plan approved |
-| `POST` | `/session/{session_id}/shots/{index}/approve` | Approve shot; advance sequential pointer |
-| `POST` | `/session/{session_id}/shots/{index}/revise` | Attach feedback; status → needs_changes |
-
----
-
-## Running Tests
-
-```bash
-make test
-# or:
-pytest backend/tests/ -v
-```
-
-101 tests pass; 1 integration test is skipped unless `RUN_IMAGE_TESTS=1`.
-
-```bash
-RUN_IMAGE_TESTS=1 pytest backend/tests/test_image_client.py -k integration
-```
-
-### What's tested
-
-| Test file | Coverage |
-|---|---|
-| `test_health.py` | `/health` and `/echo` endpoints |
-| `test_sessions.py` | Session create/get, deep-copy isolation, error shapes |
-| `test_planning.py` | Planning chat, plan generation, plan approval, phase gating |
-| `test_workflow.py` | Full brief → planning → generate → approve → revise cycle, all phase and status gates |
-| `test_image_client.py` | Stub mode, base64 output, error classification, shot failure handling |
-
----
-
-## Linting & Formatting
-
-```bash
-make lint    # ruff check
-make format  # black format check
-```
-
-Or auto-fix:
-
-```bash
-ruff check --fix backend/
-black backend/
-```
-
----
-
-## Configuration
-
-All backend configuration is via environment variables (or `.env` file):
-
-| Variable | Default | Description |
-|---|---|---|
-| `ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:5173` | Comma-separated CORS origins |
-| `LOG_LEVEL` | `INFO` | Python logging level |
-| `GOOGLE_CLOUD_PROJECT` | *(empty)* | GCP project for Vertex AI — leave empty for image stub mode |
-| `GOOGLE_CLOUD_LOCATION` | `us-central1` | Vertex AI region |
-| `IMAGE_MODEL` | `imagen-3.0-generate-001` | Imagen model identifier |
-| `GEMINI_MODEL` | `gemini-2.0-flash-001` | Gemini model for planning chat and plan generation |
-
-Frontend configuration (`frontend/.env`):
-
-| Variable | Default | Description |
-|---|---|---|
-| `VITE_API_BASE_URL` | `http://localhost:8000` | Backend API base URL |
-
----
-
-## Vertex AI Setup
-
-Both Gemini (planning) and Imagen (images) are accessed via Vertex AI using Application Default Credentials (ADC).
-
-### 1. Authenticate
+**1. Authenticate** (Application Default Credentials — no API keys stored in the repo):
 
 ```bash
 gcloud auth application-default login
 ```
 
-### 2. Enable billing and the API
+**2. Enable the Vertex AI API:**
 
 ```bash
-# Enable the Vertex AI API
 gcloud services enable aiplatform.googleapis.com --project=YOUR_PROJECT_ID
 ```
 
-Billing must be enabled on the GCP project — Vertex AI is not available on the free tier.
+Billing must be enabled on the GCP project.
 
-### 3. Set environment variables
+**3. Set environment variables** (`.env` file at repo root):
 
 ```bash
 # Required
-export GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_PROJECT=your-project-id
 
 # Optional — defaults shown
-export GOOGLE_CLOUD_LOCATION=us-central1
-export IMAGE_MODEL=imagen-3.0-generate-001
-export GEMINI_MODEL=gemini-2.0-flash-001
+GOOGLE_CLOUD_LOCATION=us-central1
+IMAGE_MODEL=imagen-3.0-generate-001
+GEMINI_MODEL=gemini-2.0-flash-001
 ```
 
-Or add them to your `.env` file at the repo root.
-
-### 4. Verify
-
-```bash
-# Start the server and test planning:
-curl -s -X POST http://localhost:8000/session | python3 -c "import sys,json; sid=json.load(sys.stdin)['session_id']; print(sid)"
-# Use the returned session_id in subsequent calls
-```
+**4. Restart the backend** — Vertex AI activates automatically.
 
 ---
 
-## Optional: Firestore Persistence
+## 7. Firestore Persistence
 
-By default, sessions are held in-memory and lost on restart. Enable Firestore to persist sessions across restarts and share them between processes.
+By default, sessions live **in-memory** and are lost on restart.  Enable Firestore to persist sessions across restarts and allow session sharing by ID.
 
 ### Named database
-
-This project uses a **named** Firestore database (not the `(default)` database):
 
 | Setting | Value |
 |---|---|
@@ -493,15 +246,9 @@ This project uses a **named** Firestore database (not the `(default)` database):
 | Project | `pictr-488900` |
 | Location | `nam5` (US multi-region) |
 
-### Setup
+### Enable persistence
 
-**1. Authenticate** (same ADC credentials used for Vertex AI):
-
-```bash
-gcloud auth application-default login
-```
-
-**2. Set environment variables** (or add to `.env`):
+Add to `.env`:
 
 ```bash
 USE_FIRESTORE=true
@@ -512,52 +259,115 @@ FIRESTORE_DATABASE=pictr-tubi
 FIRESTORE_COLLECTION=sessions
 ```
 
-**3. Restart the backend.** Sessions will now be read from and written to Firestore on every operation.
+Requires the same ADC authentication as Vertex AI.
 
-When `USE_FIRESTORE=false` (default), the app runs entirely in-memory with no GCP dependency — no Firestore credentials needed.
+### Load a session by ID
+
+1. Copy the **Session ID** shown in the left panel.
+2. Paste it into the **Load** input field (shown in both no-session and active-session states).
+3. Click **Load** — the session state is restored from Firestore.
 
 ---
 
-## Troubleshooting
+## 8. End-to-End Demo
 
-### 503 errors on planning endpoints
+1. Open `http://localhost:5173` → click **＋ New Session**
+2. Fill in the brief (brand, product, audience, tone, platform, duration) → **Submit Brief**
+3. Chat with the AI creative director to refine the narrative
+4. Click **Generate Storyboard Plan** — Gemini produces a plan with beats and shot intents
+5. Review the plan and click **Approve Plan** — shot placeholders are created
+6. Click **Generate** on Shot 1 — Imagen produces image + voiceover + sfx + camera notes
+7. Approve the shot to advance, or click **Revise** to give feedback and regenerate
+8. Repeat for each shot until all are approved
+9. View the completed storyboard in the grid overview
 
-Planning endpoints (`/planning/message`, `/planning/plan`) return HTTP 503 when Gemini is unavailable or misconfigured. Common causes:
+---
 
-| Symptom | Likely cause | Fix |
+## 9. Design Decisions
+
+**FastAPI**
+Async-ready, minimal boilerplate, and the automatic `/docs` endpoint is a useful demo artifact.  Pydantic models are shared as the validation layer for both API requests and domain objects.
+
+**React + Vite + TypeScript**
+Fast HMR during development.  TypeScript `types.ts` mirrors the backend Pydantic models exactly, so the contract is explicit and compiler-checked.
+
+**Agent / tool architecture**
+`StoryboardAgent` owns workflow logic and phase transitions.  `tools.py` contains pure functions with no store side-effects.  `GeminiClient` and `ImageClient` are provider-specific adapters — swapping either requires changing one file.
+
+**Explicit sequential approval**
+Each shot must be approved before the next generates.  This prevents runaway generation costs, creates a natural review checkpoint, and mirrors how real storyboard reviews work.
+
+**Vertex AI with ADC**
+Gemini and Imagen share a single authentication system (Application Default Credentials).  No per-service API keys, no secrets in the repository.
+
+**Stub fallback modes**
+`ImageClient` returns deterministic `picsum.photos` placeholders when GCP is unconfigured.  The full UI — all three phases, approval flow, revision cycle — is explorable without any cloud credentials.
+
+---
+
+## 10. Tradeoffs
+
+| Decision | Benefit | Limitation |
 |---|---|---|
-| `503` immediately | `GOOGLE_CLOUD_PROJECT` not set | Set the env var and restart the server |
-| `503` after a few seconds | ADC not configured | Run `gcloud auth application-default login` |
-| `503` with billing error in server logs | Billing not enabled | Enable billing for the GCP project |
-| `503` intermittently | Quota exceeded or Gemini outage | Wait and retry; check GCP status |
-
-The error message shown in the UI is intentionally generic ("Planner temporarily unavailable") — full details are logged server-side.
-
-### Image generation falls back to placeholders
-
-If `GOOGLE_CLOUD_PROJECT` is not set, `ImageClient` operates in **stub mode**: it returns a deterministic `picsum.photos` URL instead of calling Imagen. This lets you run the full INTAKE → PLANNING → STORYBOARD workflow without any GCP credentials. Set `GOOGLE_CLOUD_PROJECT` to switch to real image generation.
-
-### Planning works but images fail
-
-If planning succeeds (Gemini is configured) but image generation fails (Imagen is not), each shot will have `status = "failed"`. The "↺ Retry Generation" button re-attempts the call. Check that:
-- Billing is enabled for Imagen (separate quota from Gemini)
-- The `IMAGE_MODEL` value is a valid Imagen model in your region
+| **Firestore over relational DB** | Schemaless fits rapid model iteration; Pydantic serialises cleanly to JSON documents | Ad-hoc cross-session queries are harder; no referential integrity |
+| **Synchronous image generation** | No job queue needed; simpler request model | Blocks the request thread for the Imagen call duration (~3–8 s) |
+| **Base64 images over GCS** | Zero blob storage infrastructure for the demo | Payload sizes inflate; not viable for production video thumbnails |
+| **Single-node server** | Dead-simple deployment for demo and review | Multi-worker requires replacing in-memory store (Firestore flag addresses this) |
+| **In-memory store (default)** | Zero dependencies for local development | Sessions lost on restart; acceptable for demos |
 
 ---
 
-## Design Decisions
+## 11. Phase 2 Roadmap
 
-**Why threading.Lock and not asyncio.Lock?**
-FastAPI with a single Uvicorn worker uses an event loop for async handlers, but the store may also be accessed from background threads in the future.  A `threading.Lock` is safe in both contexts and avoids the footgun of mixing sync/async locking primitives.
+### Vision: AI-Generated Commercials
 
-**Why return deep copies from the store?**
-Returning a reference to the internal dict value would allow callers to silently corrupt stored state.  Deep copies make the isolation contract explicit and testable.
+The logical evolution is moving from storyboard to video — using the approved shot cards as a production script for automated video segment generation and final assembly.
 
-**Why a stub for image generation?**
-`ImageClient` uses picsum.photos with a deterministic seed when `GOOGLE_CLOUD_PROJECT` is unset, so the full pipeline (intake → planning → shot generation → approval gate) can be exercised without a live API key.  Setting `GOOGLE_CLOUD_PROJECT` transparently switches to real Vertex AI Imagen with no other code changes.
+```
+Approved Storyboard
+        ↓
+Video Segment Generation  (per shot — Veo or similar)
+        ↓
+Voiceover Sync  (per shot audio)
+        ↓
+Assembly + Timing
+        ↓
+Final Commercial Export  (MP4 / broadcast spec)
+```
 
-**Why use the plan's `image_prompt` for Imagen?**
-The planning phase has full narrative context (brief + conversation + beat structure). Gemini uses this to write a focused, visually specific Imagen prompt for each shot. This produces more coherent images than a generic prompt derived from the brief alone.
+### Infrastructure changes
 
-**Why not use a global `app` dependency for the store?**
-FastAPI's `Depends()` machinery is clean but adds boilerplate for a one-module MVP.  The module-level store singleton is simpler and the tests replace it via targeted monkey-patching.  If the project grows, switching to `Depends(get_store)` is straightforward.
+| Component | Change |
+|---|---|
+| **Database** | PostgreSQL via SQLAlchemy — relational integrity for users, projects, assets |
+| **Asset storage** | Google Cloud Storage — durable store for images, video segments, final exports |
+| **Job system** | Cloud Tasks or Pub/Sub — decouple long-running video generation from the request lifecycle |
+| **Auth** | OAuth 2.0 / Firebase Auth — multi-user support, projects scoped to accounts |
+
+### New backend modules
+
+```
+backend/app/
+├── db.py          # SQLAlchemy session factory + ORM models
+├── storage.py     # GCS upload / download helpers
+├── jobs.py        # async job dispatch + status polling
+└── assets.py      # brand logo + product image management
+```
+
+### New API endpoints
+
+```
+POST /session/{id}/export              kick off video export job
+GET  /jobs/{job_id}                    poll export job status
+POST /session/{id}/assets/upload       upload brand logo or product image
+POST /session/{id}/shots/{i}/voice     generate voiceover audio for a shot
+```
+
+### Voice Interface
+
+A voice-first planning mode is a natural extension of the chat interface:
+
+- **Input:** Browser microphone → Web Speech API → transcript sent to `/planning/message`
+- **Output:** TTS playback of Gemini responses via `SpeechSynthesis` API or a voice API (ElevenLabs, etc.)
+
+This enables a fully conversational creative workflow — ideating an entire storyboard without typing.

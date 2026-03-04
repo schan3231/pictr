@@ -4,8 +4,8 @@ Deterministic tool functions called by the agent.
 Design notes:
 - Tools are pure functions: given inputs → return outputs.  No side-effects on
   the session store; the agent is responsible for persisting results.
-- Each tool has a clear, typed interface so it can be registered with ADK's
-  function-calling mechanism with minimal glue.
+- Each tool has a clear, typed interface so the agent layer can call them
+  with minimal glue code.
 - Image generation is delegated to ImageClient (image_client.py).  When the
   client is in stub mode (no GCP configured) it returns a picsum placeholder.
   When GCP is configured it returns a base64 data URL from Vertex AI Imagen.
@@ -38,7 +38,7 @@ def plan_shot_list(brief: Brief) -> list[dict[str, str | int]]:
     The number of shots is derived from duration: roughly one shot per 5 seconds,
     capped between 3 and 8 shots.
 
-    This is a rule-based stub; the ADK agent will eventually call an LLM here.
+    This is a rule-based fallback used when the storyboard plan does not provide explicit shot counts.
     """
     shots_count = max(3, min(8, math.floor(brief.duration_seconds / 5)))
 

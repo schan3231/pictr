@@ -27,12 +27,9 @@ from __future__ import annotations
 import base64
 import logging
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from backend.app.config import settings
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
