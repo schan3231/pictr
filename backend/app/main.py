@@ -5,8 +5,9 @@ Module layout:
   main.py   — app factory, middleware, exception handlers, router inclusion
   models.py — Pydantic domain models
   store.py  — in-memory session store (thread-safe)
-  agent.py  — ADK agent orchestration (stub for now)
+  agent.py  — orchestration layer (phase machine + LLM/tool dispatch)
   tools.py  — deterministic tool functions called by the agent
+  llm_client.py — Gemini LLM client for planning phase
 
 Run locally:
   uvicorn backend.app.main:app --reload
@@ -23,7 +24,14 @@ from fastapi.responses import JSONResponse
 
 from backend.app.agent import AgentError, agent
 from backend.app.config import settings
-from backend.app.models import Brief, ErrorResponse, ReviseRequest, Session
+from backend.app.llm_client import LLMGenerationError
+from backend.app.models import (
+    Brief,
+    ErrorResponse,
+    PlanningChatRequest,
+    ReviseRequest,
+    Session,
+)
 from backend.app.store import store
 
 # ---------------------------------------------------------------------------
@@ -40,7 +48,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Pictr Storyboard Agent",
     description="Generate 30-second commercial storyboards from a creative brief.",
-    version="0.1.0",
+    version="0.2.0",
     # Hide /docs in production by setting docs_url=None, but keep it for MVP.
 )
 
@@ -92,7 +100,7 @@ async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSON
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# Routes — meta
 # ---------------------------------------------------------------------------
 
 
@@ -131,6 +139,11 @@ async def echo(request: Request) -> Any:
             status_code=400, detail="Request body must be valid JSON."
         ) from None
     return body
+
+
+# ---------------------------------------------------------------------------
+# Routes — sessions
+# ---------------------------------------------------------------------------
 
 
 @app.post(
@@ -172,26 +185,26 @@ async def get_session(session_id: str) -> Session:
 
 
 # ---------------------------------------------------------------------------
-# Agent routes — message + shot workflow
+# Routes — brief submission (INTAKE → PLANNING)
 # ---------------------------------------------------------------------------
 
 
 @app.post(
     "/session/{session_id}/message",
     response_model=Session,
-    summary="Submit creative brief (INTAKE phase)",
+    summary="Submit creative brief (INTAKE → PLANNING)",
     tags=["workflow"],
 )
 async def submit_message(session_id: str, brief: Brief) -> Session:
     """
-    Accept the user's creative brief and transition to STORYBOARD phase.
+    Accept the user's creative brief and transition to PLANNING phase.
 
-    **Phase gate:** only valid when `phase == INTAKE`.  If the session is
-    already in STORYBOARD (brief already submitted) this returns 400.
+    **Phase gate:** only valid when `phase == INTAKE`.  Returns 400 if the
+    session is already past INTAKE.
 
-    On success the response includes the populated `shots` list — one
-    placeholder Shot per planned scene.  Content is generated per-shot via
-    the `/shots/{index}/generate` endpoint.
+    On success the response includes an initial assistant message in
+    `planning_messages` to kick off the creative conversation.  Shots are
+    NOT created yet — proceed to the planning endpoints to build the plan.
     """
     try:
         return agent.submit_brief(session_id, brief)
@@ -201,6 +214,101 @@ async def submit_message(session_id: str, brief: Brief) -> Session:
         ) from None
     except AgentError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Routes — planning phase (PLANNING phase only)
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/session/{session_id}/planning/message",
+    response_model=Session,
+    summary="Send a message to the AI planner",
+    tags=["planning"],
+)
+async def planning_message(session_id: str, body: PlanningChatRequest) -> Session:
+    """
+    Send a user message to the AI creative director and receive a reply.
+
+    **Phase gate:** only valid when `phase == PLANNING`.
+
+    The message is appended to `planning_messages` along with the assistant
+    response.  Repeat as many times as needed before calling `/planning/plan`.
+
+    Returns 503 if the Gemini LLM service is unavailable (e.g. GCP not configured).
+    """
+    try:
+        return agent.planning_chat(session_id, body.message)
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail=f"Session '{session_id}' not found."
+        ) from None
+    except AgentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LLMGenerationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post(
+    "/session/{session_id}/planning/plan",
+    response_model=Session,
+    summary="Generate a storyboard plan from the conversation",
+    tags=["planning"],
+)
+async def generate_plan(session_id: str) -> Session:
+    """
+    Ask the AI to produce a full `StoryboardPlan` from the brief + conversation.
+
+    **Phase gate:** only valid when `phase == PLANNING`.
+
+    The plan is stored as a draft (`plan_status == "draft"`) and the session
+    remains in PLANNING.  Review the plan and call `/planning/approve` to commit
+    it and advance to STORYBOARD.
+
+    Returns 503 if the Gemini LLM service is unavailable.
+    """
+    try:
+        return agent.generate_plan(session_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail=f"Session '{session_id}' not found."
+        ) from None
+    except AgentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LLMGenerationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post(
+    "/session/{session_id}/planning/approve",
+    response_model=Session,
+    summary="Approve the draft plan and begin shot generation",
+    tags=["planning"],
+)
+async def approve_plan(session_id: str) -> Session:
+    """
+    Approve the current draft `StoryboardPlan` and transition to STORYBOARD phase.
+
+    **Phase gate:** only valid when `phase == PLANNING` and `plan_status == "draft"`.
+
+    On success the `shots` list is populated from the plan (one Shot per
+    PlannedShot), all in `draft` status, ready for sequential generation.
+    The session transitions to `phase == "STORYBOARD"`.
+    """
+    try:
+        return agent.approve_plan(session_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail=f"Session '{session_id}' not found."
+        ) from None
+    except AgentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Routes — storyboard phase (STORYBOARD phase only)
+# ---------------------------------------------------------------------------
 
 
 @app.post(
@@ -213,11 +321,10 @@ async def generate_shot(session_id: str, shot_index: int) -> Session:
     """
     Generate image + narrative content for the shot at `shot_index`.
 
-    **Sequential gating:** `shot_index` must equal `current_shot_index`.
-    You cannot skip ahead or regenerate an already-approved shot.
+    **Phase gate:** only valid when `phase == STORYBOARD` (plan must be approved).
 
-    Shot must be in `draft` or `needs_changes` status.  After generation the
-    shot transitions to `ready` and the full Shot Card is populated.
+    Shot must be in `draft`, `needs_changes`, or `failed` status.  After
+    generation the shot transitions to `ready`.
     """
     try:
         return agent.generate_shot(session_id, shot_index)
@@ -239,11 +346,8 @@ async def approve_shot(session_id: str, shot_index: int) -> Session:
     """
     Approve the shot at `shot_index` and advance to the next shot.
 
-    **Gate:** shot must be in `ready` status (i.e. generated and not yet
-    approved).  Attempting to approve a `draft` or `approved` shot returns 400.
-
-    After approval `current_shot_index` increments by one.  When all shots are
-    approved the storyboard is complete.
+    **Gate:** shot must be in `ready` status.
+    After approval `current_shot_index` increments by one.
     """
     try:
         return agent.approve_shot(session_id, shot_index)
@@ -265,12 +369,9 @@ async def revise_shot(session_id: str, shot_index: int, body: ReviseRequest) -> 
     """
     Attach feedback to a shot and mark it for regeneration.
 
-    The shot transitions from `ready` → `needs_changes` and `current_shot_index`
-    resets to `shot_index`.  The next call to `/generate` will pass the feedback
-    to the generation tool so the new version reflects the user's notes.
-
-    `revision` counter increments on each regeneration so the history is
-    traceable.
+    The shot transitions from `ready` → `needs_changes` and
+    `current_shot_index` resets to `shot_index` (unless it is already ahead).
+    The next `/generate` call will incorporate the feedback.
     """
     try:
         return agent.request_changes(session_id, shot_index, body.feedback)

@@ -44,6 +44,7 @@ export function ShotCard({
   const isComplete = session.current_shot_index >= session.shots.length;
   const canApprove = isCurrentShot || isComplete;
   const canRevise = ["ready", "approved", "needs_changes", "failed"].includes(shot.status);
+  const planApproved = session.phase === "STORYBOARD" && session.plan_status === "approved";
 
   function handleReviseSubmit() {
     if (!feedback.trim()) return;
@@ -160,97 +161,118 @@ export function ShotCard({
 
         <hr className="divider" />
 
-        {/* ── draft: Generate ── */}
-        {shot.status === "draft" && (
-          <div className="btn-row">
-            <button
-              className="btn-primary"
-              onClick={() => onGenerate(idx)}
-              disabled={loading}
-            >
-              {loading ? "Generating…" : `⚡ Generate Shot ${idx + 1}`}
-            </button>
-          </div>
+        {/* ── Plan not approved: gating notice ── */}
+        {!planApproved && (
+          <p style={{ fontSize: 12, color: "var(--muted)" }}>
+            Approve the storyboard plan to begin generating shots.
+          </p>
         )}
 
-        {/* ── needs_changes: Regenerate ── */}
-        {shot.status === "needs_changes" && (
-          <div className="btn-row">
-            <button
-              className="btn-primary"
-              onClick={() => onGenerate(idx)}
-              disabled={loading}
-            >
-              {loading ? "Generating…" : `⚡ Regenerate Shot ${idx + 1}`}
-            </button>
-          </div>
-        )}
-
-        {/* ── ready: Approve + Revise ── */}
-        {shot.status === "ready" && (
+        {planApproved && (
           <>
-            <div className="btn-row">
-              <button
-                className="btn-primary"
-                onClick={() => onApprove(idx)}
-                disabled={loading || !canApprove}
-                title={!canApprove ? "Shots must be approved in order" : undefined}
-              >
-                {loading ? "Saving…" : "✓ Approve"}
-              </button>
-              <button
-                className="btn-secondary"
-                onClick={() => setReviseOpen((v) => !v)}
-                disabled={loading}
-              >
-                ✎ Revise
-              </button>
-            </div>
-            {!isComplete && !isCurrentShot && (
-              <p style={{ fontSize: 11, color: "var(--muted)" }}>
-                Shot {session.current_shot_index + 1} must be approved first.
-              </p>
+            {/* ── draft: Generate ── */}
+            {shot.status === "draft" && (
+              <div className="btn-row">
+                <button
+                  className="btn-primary"
+                  onClick={() => onGenerate(idx)}
+                  disabled={loading}
+                >
+                  {loading ? "Generating…" : `⚡ Generate Shot ${idx + 1}`}
+                </button>
+              </div>
             )}
-            {reviseForm}
-          </>
-        )}
 
-        {/* ── approved: Revise only ── */}
-        {shot.status === "approved" && canRevise && (
-          <>
-            <div className="btn-row">
-              <button
-                className="btn-secondary"
-                onClick={() => setReviseOpen((v) => !v)}
-                disabled={loading}
-              >
-                ✎ Revise
-              </button>
-            </div>
-            {reviseForm}
-          </>
-        )}
+            {/* ── needs_changes: Regenerate ── */}
+            {shot.status === "needs_changes" && (
+              <div className="btn-row">
+                <button
+                  className="btn-primary"
+                  onClick={() => onGenerate(idx)}
+                  disabled={loading}
+                >
+                  {loading ? "Generating…" : `⚡ Regenerate Shot ${idx + 1}`}
+                </button>
+              </div>
+            )}
 
-        {/* ── failed: Retry + Revise ── */}
-        {shot.status === "failed" && (
-          <>
-            <div className="btn-row">
-              <button
-                className="btn-danger"
-                onClick={() => onGenerate(idx)}
-                disabled={loading}
-              >
-                {loading ? "Retrying…" : "↺ Retry Generation"}
-              </button>
-              <button
-                className="btn-secondary"
-                onClick={() => setReviseOpen((v) => !v)}
-                disabled={loading}
-              >
-                ✎ Revise
-              </button>
-            </div>
-            {reviseForm}
+            {/* ── ready: Approve + Revise ── */}
+            {shot.status === "ready" && (
+              <>
+                <div className="btn-row">
+                  <button
+                    className="btn-primary"
+                    onClick={() => onApprove(idx)}
+                    disabled={loading || !canApprove}
+                    title={!canApprove ? "Shots must be approved in order" : undefined}
+                  >
+                    {loading ? "Saving…" : "✓ Approve"}
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => setReviseOpen((v) => !v)}
+                    disabled={loading}
+                  >
+                    ✎ Revise
+                  </button>
+                </div>
+                {!isComplete && !isCurrentShot && (
+                  <p style={{ fontSize: 11, color: "var(--muted)" }}>
+                    Shot {session.current_shot_index + 1} must be approved first.
+                  </p>
+                )}
+                {isComplete && (
+                  <p style={{ fontSize: 11, color: "var(--muted)" }}>
+                    Storyboard complete. You can still revise any frame.
+                  </p>
+                )}
+                {reviseForm}
+              </>
+            )}
+
+            {/* ── approved: Revise only ── */}
+            {shot.status === "approved" && canRevise && (
+              <>
+                <div className="btn-row">
+                  <button
+                    className="btn-secondary"
+                    onClick={() => setReviseOpen((v) => !v)}
+                    disabled={loading}
+                  >
+                    ✎ Revise
+                  </button>
+                </div>
+                {isComplete && (
+                  <p style={{ fontSize: 11, color: "var(--muted)" }}>
+                    Storyboard complete. You can still revise any frame.
+                  </p>
+                )}
+                {reviseForm}
+              </>
+            )}
+
+            {/* ── failed: Retry + Revise ── */}
+            {shot.status === "failed" && (
+              <>
+                <div className="btn-row">
+                  <button
+                    className="btn-danger"
+                    onClick={() => onGenerate(idx)}
+                    disabled={loading}
+                  >
+                    {loading ? "Retrying…" : "↺ Retry Generation"}
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => setReviseOpen((v) => !v)}
+                    disabled={loading}
+                  >
+                    ✎ Revise
+                  </button>
+                </div>
+                {reviseForm}
+              </>
+            )}
           </>
         )}
       </div>

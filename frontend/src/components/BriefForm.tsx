@@ -127,7 +127,7 @@ export function BriefForm({ loading, onSubmit }: BriefFormProps) {
             style={{ width: "100%" }}
             disabled={loading || !isValid}
           >
-            {loading ? "Submitting…" : "Generate Shot List →"}
+            {loading ? "Submitting…" : "Start Planning →"}
           </button>
         </form>
       </div>

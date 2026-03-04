@@ -2,30 +2,30 @@
 Agent orchestration layer — Pictr Storyboard Agent.
 
 Architecture boundary:
-    API layer (main.py) → Agent (this file) → Tools (tools.py) → Store (store.py)
+    API layer (main.py) → Agent (this file) → Tools (tools.py) / LLM (llm_client.py) → Store (store.py)
 
 The agent owns workflow logic:
   - Interprets the current session phase and enforces legal transitions.
-  - Calls tool functions to do real work (shot planning, card generation).
+  - Calls tool functions to do real work (shot card generation).
+  - Calls the LLM client for planning-phase conversation and plan generation.
   - Persists results back to the store.
   - Returns the updated session to the API layer.
 
-ADK integration note:
-  This module currently contains a hand-rolled orchestrator that mirrors the
-  logic an ADK agent would implement.  When the ADK integration is wired in
-  (next milestone), replace `StoryboardAgent.run_turn()` with the ADK runner
-  and register `plan_shot_list` / `generate_shot_card` as ADK tool functions.
-  The rest of the codebase (API, store, models) does not need to change.
+Phase machine:
+    INTAKE  ──(submit_brief)──▶  PLANNING  ──(approve_plan)──▶  STORYBOARD
+                                     ↑
+                              planning_chat / generate_plan
 """
 
 from __future__ import annotations
 
 import logging
 
-from backend.app.models import Brief, Session, Shot
+from backend.app.llm_client import LLMGenerationError, llm_client  # noqa: F401
+from backend.app.models import Brief, ChatMessage, Session, Shot
 from backend.app.store import SessionStore
 from backend.app.store import store as _default_store
-from backend.app.tools import generate_shot_card, plan_shot_list
+from backend.app.tools import generate_shot_card
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +52,10 @@ class StoryboardAgent:
 
     def submit_brief(self, session_id: str, brief: Brief) -> Session:
         """
-        Accept the user's creative brief and build the initial shot list.
+        Accept the user's creative brief and transition to PLANNING phase.
 
-        Transitions the session from INTAKE → STORYBOARD.
+        Transitions the session from INTAKE → PLANNING.  Shots are NOT created
+        here — they are created later when the user approves the storyboard plan.
 
         Raises:
             AgentError: if the session is not in INTAKE phase.
@@ -69,25 +70,137 @@ class StoryboardAgent:
 
         logger.info("Session %s: submitting brief for '%s'", session_id, brief.brand_name)
 
-        # Plan shot list (stub / rule-based for now).
-        plan = plan_shot_list(brief)
+        # Seed the conversation with a planner welcome message.
+        welcome = ChatMessage(
+            role="assistant",
+            content=(
+                f"Great! I've got your brief for {brief.brand_name}. "
+                f"We're creating a {brief.duration_seconds}-second {brief.platform} ad "
+                f"for {brief.product}, aimed at {brief.target_audience}. "
+                "Let's craft the story arc together. "
+                "What key emotion or moment do you want viewers to walk away with?"
+            ),
+        )
 
-        # Build Shot stubs — content will be filled in during STORYBOARD phase.
+        session.brief = brief
+        session.phase = "PLANNING"
+        session.planning_messages = [welcome]
+        session.touch()
+
+        self._store.update(session)
+        logger.info("Session %s: transitioned to PLANNING", session_id)
+        return session
+
+    # ------------------------------------------------------------------
+    # Phase: PLANNING
+    # ------------------------------------------------------------------
+
+    def planning_chat(self, session_id: str, user_message: str) -> Session:
+        """
+        Process a user message in the planning conversation.
+
+        Appends the user message, calls Gemini for a reply, and appends the
+        assistant response.  Raises LLMGenerationError on upstream failure (the
+        API layer maps this to 503).
+
+        Raises:
+            AgentError:          if the session is not in PLANNING phase.
+            KeyError:            if session_id is not found.
+            LLMGenerationError:  if the LLM call fails.
+        """
+        session = self._get_or_raise(session_id)
+        self._require_planning_phase(session)
+
+        # Append the user turn.
+        session.planning_messages.append(ChatMessage(role="user", content=user_message))
+
+        # Get system prompt and call the LLM.
+        assert session.brief is not None
+        system_prompt = self._planning_system_prompt(session.brief)
+        response_text = llm_client.chat(session.planning_messages, system_prompt)
+
+        # Append the assistant reply.
+        session.planning_messages.append(ChatMessage(role="assistant", content=response_text))
+        session.touch()
+
+        self._store.update(session)
+        logger.info(
+            "Session %s: planning chat turn (%d messages total)",
+            session_id,
+            len(session.planning_messages),
+        )
+        return session
+
+    def generate_plan(self, session_id: str) -> Session:
+        """
+        Ask the LLM to produce a full StoryboardPlan from the brief + conversation.
+
+        Sets plan_status="draft" but does NOT create shots or transition phases —
+        the user must call approve_plan() to commit the plan.
+
+        Raises:
+            AgentError:          if the session is not in PLANNING phase or brief is missing.
+            KeyError:            if session_id is not found.
+            LLMGenerationError:  if the LLM call fails or returns invalid output.
+        """
+        session = self._get_or_raise(session_id)
+        self._require_planning_phase(session)
+
+        assert session.brief is not None
+        logger.info("Session %s: generating storyboard plan", session_id)
+
+        plan = llm_client.generate_plan(session.brief, session.planning_messages)
+
+        session.plan = plan
+        session.plan_status = "draft"
+        session.touch()
+
+        self._store.update(session)
+        logger.info(
+            "Session %s: plan drafted with %d shots, %d beats",
+            session_id,
+            len(plan.shots),
+            len(plan.beats),
+        )
+        return session
+
+    def approve_plan(self, session_id: str) -> Session:
+        """
+        Approve the current draft plan and transition to STORYBOARD phase.
+
+        Creates Shot objects from the plan's PlannedShot list, storing the
+        plan-provided image_prompt on each Shot for use during generation.
+
+        Raises:
+            AgentError: if not in PLANNING phase, or no draft plan exists.
+            KeyError:   if session_id is not found.
+        """
+        session = self._get_or_raise(session_id)
+        self._require_planning_phase(session)
+
+        if session.plan is None or session.plan_status != "draft":
+            raise AgentError(
+                "Cannot approve plan: no draft plan exists. "
+                "Call POST /planning/plan to generate one first."
+            )
+
+        # Build shots from the plan.
         shots = [
-            Shot(index=item["index"])  # type: ignore[arg-type]
-            for item in plan
+            Shot(index=ps.index, image_prompt=ps.image_prompt)
+            for ps in session.plan.shots
         ]
 
-        # Transition to STORYBOARD.
-        session.brief = brief
         session.shots = shots
         session.phase = "STORYBOARD"
+        session.plan_status = "approved"
         session.current_shot_index = 0
         session.touch()
 
         self._store.update(session)
         logger.info(
-            "Session %s: transitioned to STORYBOARD with %d shots", session_id, len(shots)
+            "Session %s: plan approved — transitioned to STORYBOARD with %d shots",
+            session_id,
+            len(shots),
         )
         return session
 
@@ -119,7 +232,11 @@ class StoryboardAgent:
             )
 
         assert session.brief is not None  # guaranteed by submit_brief
+
+        # Use the plan's visual description when available, else a generic label.
         description = f"Shot {shot_index + 1} of {len(session.shots)}"
+        if session.plan and shot_index < len(session.plan.shots):
+            description = session.plan.shots[shot_index].visual_description
 
         feedback = shot.user_feedback if shot.status == "needs_changes" else None
 
@@ -169,7 +286,7 @@ class StoryboardAgent:
         """
         Mark a shot as needing changes and attach user feedback.
 
-        The next call to `generate_current_shot` will pass the feedback to the
+        The next call to `generate_shot` will pass the feedback to the
         tool so the regeneration is informed by the user's notes.
 
         Raises:
@@ -210,6 +327,13 @@ class StoryboardAgent:
         return session
 
     @staticmethod
+    def _require_planning_phase(session: Session) -> None:
+        if session.phase != "PLANNING":
+            raise AgentError(
+                f"Operation requires PLANNING phase; current phase: '{session.phase}'."
+            )
+
+    @staticmethod
     def _require_storyboard_phase(session: Session) -> None:
         if session.phase != "STORYBOARD":
             raise AgentError(
@@ -223,6 +347,18 @@ class StoryboardAgent:
                 f"Shot index {shot_index} is out of range (session has {len(session.shots)} shots)."
             )
         return session.shots[shot_index]
+
+    @staticmethod
+    def _planning_system_prompt(brief: Brief) -> str:
+        from backend.app.llm_client import _PLANNING_SYSTEM_PROMPT_TEMPLATE  # noqa: PLC0415
+
+        return _PLANNING_SYSTEM_PROMPT_TEMPLATE.format(
+            brand_name=brief.brand_name,
+            product=brief.product,
+            target_audience=brief.target_audience,
+            tone=brief.tone,
+            platform=brief.platform,
+        )
 
 
 # ---------------------------------------------------------------------------

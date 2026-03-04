@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Session } from "../types";
 
 const SESSION_KEY = "pictr_session_id";
@@ -7,6 +8,7 @@ interface SessionControlsProps {
   loading: boolean;
   onCreateSession: () => void;
   onClearSession: () => void;
+  onLoadSession: (id: string) => void;
 }
 
 export function SessionControls({
@@ -14,6 +16,7 @@ export function SessionControls({
   loading,
   onCreateSession,
   onClearSession,
+  onLoadSession,
 }: SessionControlsProps) {
   function handleCopy() {
     if (session) void navigator.clipboard.writeText(session.session_id);
@@ -32,16 +35,31 @@ export function SessionControls({
               📋
             </button>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <span
               className="chip"
               style={{
-                background: session.phase === "INTAKE" ? "#1e3a5f" : "#14532d",
-                color: session.phase === "INTAKE" ? "#60a5fa" : "#22c55e",
+                background:
+                  session.phase === "INTAKE"
+                    ? "#1e3a5f"
+                    : session.phase === "PLANNING"
+                    ? "#3b1a6b"
+                    : "#14532d",
+                color:
+                  session.phase === "INTAKE"
+                    ? "#60a5fa"
+                    : session.phase === "PLANNING"
+                    ? "#c084fc"
+                    : "#22c55e",
               }}
             >
               {session.phase}
             </span>
+            {session.phase === "PLANNING" && (
+              <span className="muted" style={{ fontSize: 12 }}>
+                Plan: {session.plan_status}
+              </span>
+            )}
             {session.phase === "STORYBOARD" && (
               <span className="muted" style={{ fontSize: 12 }}>
                 {session.current_shot_index >= session.shots.length
@@ -60,17 +78,53 @@ export function SessionControls({
           >
             ✕ Clear session
           </button>
+          <LoadForm loading={loading} onLoad={onLoadSession} />
         </div>
       ) : (
-        <button
-          className="btn-primary"
-          onClick={onCreateSession}
-          disabled={loading}
-          style={{ width: "100%" }}
-        >
-          {loading ? "Creating…" : "＋ New Session"}
-        </button>
+        <>
+          <button
+            className="btn-primary"
+            onClick={onCreateSession}
+            disabled={loading}
+            style={{ width: "100%" }}
+          >
+            {loading ? "Creating…" : "＋ New Session"}
+          </button>
+          <LoadForm loading={loading} onLoad={onLoadSession} />
+        </>
       )}
+    </div>
+  );
+}
+
+function LoadForm({
+  loading,
+  onLoad,
+}: {
+  loading: boolean;
+  onLoad: (id: string) => void;
+}) {
+  const [loadId, setLoadId] = useState("");
+
+  return (
+    <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+      <input
+        className="input"
+        placeholder="Session ID"
+        value={loadId}
+        onChange={(e) => setLoadId(e.target.value)}
+        style={{ flex: 1, fontSize: 11 }}
+      />
+      <button
+        className="btn-secondary"
+        disabled={loading || !loadId.trim()}
+        onClick={() => {
+          onLoad(loadId.trim());
+          setLoadId("");
+        }}
+      >
+        Load
+      </button>
     </div>
   );
 }
