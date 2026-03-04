@@ -117,8 +117,19 @@ def generate_shot_card(
     revision_note = f" [Revision {shot.revision + 1} — feedback: {feedback}]" if feedback else ""
     new_revision = shot.revision + (1 if feedback else 0)
 
-    # Build a rich, structured Imagen prompt from the brief + shot context.
-    image_prompt = _build_image_prompt(brief, description, feedback)
+    # Build the Imagen prompt.
+    # Priority: plan-provided image_prompt > fallback constructed from brief + description.
+    # Revision feedback is merged in either case so regenerations reflect user notes.
+    if shot.image_prompt:
+        base_prompt = shot.image_prompt
+        if feedback:
+            base_prompt = (
+                f"{base_prompt}\nUser feedback: {feedback}\n"
+                "Constraints: maintain brand identity and advertising quality."
+            )
+        image_prompt = base_prompt
+    else:
+        image_prompt = _build_image_prompt(brief, description, feedback)
 
     # Pass a deterministic seed so stub mode returns the same placeholder per
     # shot/revision combination.  The seed is ignored by real Imagen.
