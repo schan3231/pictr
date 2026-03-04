@@ -10,12 +10,13 @@
 2. [Architecture](#architecture)
 3. [Project Structure](#project-structure)
 4. [Quickstart](#quickstart)
-5. [API Reference](#api-reference)
-6. [Running Tests](#running-tests)
-7. [Linting & Formatting](#linting--formatting)
-8. [Configuration](#configuration)
-9. [Design Decisions](#design-decisions)
-10. [Roadmap (Tomorrow)](#roadmap-tomorrow)
+5. [Running the Frontend](#running-the-frontend)
+6. [End-to-End Demo](#end-to-end-demo)
+7. [API Reference](#api-reference)
+8. [Running Tests](#running-tests)
+9. [Linting & Formatting](#linting--formatting)
+10. [Configuration](#configuration)
+11. [Design Decisions](#design-decisions)
 
 ---
 
@@ -82,22 +83,41 @@ The user reviews each shot and either **approves** it or **requests changes**; t
 pictr/
 ├── backend/
 │   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py        # FastAPI app, routes, middleware
-│   │   ├── models.py      # Pydantic domain models (Session, Brief, Shot)
-│   │   ├── store.py       # Thread-safe in-memory session store
-│   │   ├── agent.py       # StoryboardAgent orchestration
-│   │   ├── tools.py       # Tool functions (shot planning, card generation)
-│   │   └── config.py      # Settings loaded from environment
+│   │   ├── main.py         # FastAPI app, routes, middleware
+│   │   ├── models.py       # Pydantic domain models (Session, Brief, Shot)
+│   │   ├── store.py        # Thread-safe in-memory session store
+│   │   ├── agent.py        # StoryboardAgent orchestration
+│   │   ├── tools.py        # Tool functions (shot planning, card generation)
+│   │   ├── image_client.py # Vertex AI Imagen wrapper (stub fallback)
+│   │   └── config.py       # Settings loaded from environment
 │   └── tests/
-│       ├── conftest.py    # Shared fixtures (isolated TestClient)
+│       ├── conftest.py     # Shared fixtures (isolated TestClient)
 │       ├── test_health.py
-│       └── test_sessions.py
-├── .env.example           # Copy to .env — never commit real values
+│       ├── test_sessions.py
+│       ├── test_workflow.py
+│       └── test_image_client.py
+├── frontend/
+│   ├── src/
+│   │   ├── types.ts        # TS mirrors of backend Pydantic models
+│   │   ├── api.ts          # fetch() wrappers for all endpoints
+│   │   ├── styles.css      # Dark Tubi-inspired theme (CSS variables)
+│   │   ├── main.tsx        # Vite entry point
+│   │   ├── App.tsx         # Layout shell + state root
+│   │   └── components/
+│   │       ├── SessionControls.tsx
+│   │       ├── BriefForm.tsx
+│   │       ├── ShotList.tsx
+│   │       ├── ShotCard.tsx
+│   │       └── Toast.tsx
+│   ├── .env.example        # VITE_API_BASE_URL=http://localhost:8000
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── vite.config.ts
+├── .env.example            # Backend env vars — copy to .env
 ├── .gitignore
-├── LICENSE                # MIT
+├── LICENSE                 # MIT
 ├── Makefile
-├── pyproject.toml         # Dependencies + ruff/black/mypy/pytest config
+├── pyproject.toml          # Dependencies + ruff/black/pytest config
 ├── README.md
 └── SECURITY.md
 ```
@@ -155,6 +175,53 @@ curl -s -X POST http://localhost:8000/session | python3 -m json.tool
 
 ---
 
+## Running the Frontend
+
+### Prerequisites
+
+- Node.js 18+ and npm
+
+### Setup
+
+```bash
+cd frontend
+cp .env.example .env    # defaults to http://localhost:8000
+npm install
+npm run dev             # Vite dev server at http://localhost:5173
+```
+
+Production build:
+
+```bash
+npm run build           # output in frontend/dist/
+```
+
+---
+
+## End-to-End Demo
+
+Run both servers simultaneously:
+
+```bash
+# Terminal 1 — backend
+make dev               # FastAPI on http://localhost:8000
+
+# Terminal 2 — frontend
+cd frontend && npm run dev   # Vite on http://localhost:5173
+```
+
+Then open **http://localhost:5173** and follow these steps:
+
+1. **Create a session** — Click "New Session". The session ID appears in the left panel and is persisted in `localStorage` so a page refresh restores it.
+2. **Submit the brief** — Fill in brand name, product, audience, tone, platform, and duration, then click "Submit Brief". The shot list appears on the left.
+3. **Generate Shot 1** — Click "⚡ Generate Shot 1". The shot card updates with an image placeholder (or a real Imagen image if GCP is configured), dialogue, SFX notes, and camera notes.
+4. **Approve or revise** — Click "✓ Approve" to move to the next shot, or "✎ Revise" to enter feedback and regenerate.
+5. **Repeat** until all shots are approved. A completion banner confirms the storyboard is done.
+
+> **Stub mode** (no GCP): images are deterministic picsum.photos placeholders — no API key needed for a full demo run.
+
+---
+
 ## API Reference
 
 ### Meta
@@ -201,14 +268,20 @@ make test
 pytest backend/tests/ -v
 ```
 
-All 20 tests should pass in < 1 second.
+67 tests pass; 1 integration test is skipped unless `RUN_IMAGE_TESTS=1`.
+
+```bash
+RUN_IMAGE_TESTS=1 pytest backend/tests/test_image_client.py -k integration
+```
 
 ### What's tested
 
 | Test file | Coverage |
 |---|---|
-| `test_health.py` | `/health` returns `ok`, `/echo` round-trips payload, bad JSON → 400 |
-| `test_sessions.py` | Create returns 201 + valid UUID4 + phase=INTAKE; GET returns same state; 404 on unknown ID; consistent error shape; store isolation (deep copy) |
+| `test_health.py` | `/health` and `/echo` endpoints |
+| `test_sessions.py` | Session create/get, deep-copy isolation, error shapes |
+| `test_workflow.py` | Full brief → generate → approve → revise cycle, all phase and status gates |
+| `test_image_client.py` | Stub mode, base64 output, error classification, shot failure handling |
 
 ---
 
@@ -230,12 +303,21 @@ black backend/
 
 ## Configuration
 
-All configuration is via environment variables (or `.env` file):
+All backend configuration is via environment variables (or `.env` file):
 
 | Variable | Default | Description |
 |---|---|---|
 | `ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:5173` | Comma-separated CORS origins |
 | `LOG_LEVEL` | `INFO` | Python logging level |
+| `GOOGLE_CLOUD_PROJECT` | *(empty)* | GCP project for Vertex AI Imagen — leave empty for stub mode |
+| `GOOGLE_CLOUD_LOCATION` | `us-central1` | Vertex AI region |
+| `IMAGE_MODEL` | `imagen-3.0-generate-001` | Imagen model identifier |
+
+Frontend configuration (`frontend/.env`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `VITE_API_BASE_URL` | `http://localhost:8000` | Backend API base URL |
 
 ---
 
@@ -248,19 +330,7 @@ FastAPI with a single Uvicorn worker uses an event loop for async handlers, but 
 Returning a reference to the internal dict value would allow callers to silently corrupt stored state.  Deep copies make the isolation contract explicit and testable.
 
 **Why a stub for image generation?**
-The stub (`tools.py: _stub_image_url`) uses picsum.photos with a deterministic seed, so demos are reproducible and the full pipeline (intake → shot list → card generation → approval gate) can be exercised without a live API key.  Swapping to a real provider requires changing only the body of `generate_shot_card`.
+`ImageClient` uses picsum.photos with a deterministic seed when `GOOGLE_CLOUD_PROJECT` is unset, so the full pipeline (intake → shot list → card generation → approval gate) can be exercised without a live API key.  Setting `GOOGLE_CLOUD_PROJECT` transparently switches to real Vertex AI Imagen with no other code changes.
 
 **Why not use a global `app` dependency for the store?**
 FastAPI's `Depends()` machinery is clean but adds boilerplate for a one-module MVP.  The module-level store singleton is simpler and the tests replace it via targeted monkey-patching.  If the project grows, switching to `Depends(get_store)` is straightforward.
-
----
-
-## Roadmap (Tomorrow)
-
-- [ ] `POST /session/{session_id}/message` — agent processes user messages (submit brief, chat)
-- [ ] `POST /session/{session_id}/shot/{index}/generate` — trigger shot generation
-- [ ] `POST /session/{session_id}/shot/{index}/approve`
-- [ ] `POST /session/{session_id}/shot/{index}/revise` — attach feedback + queue regeneration
-- [ ] Wire real ADK agent runner (replace hand-rolled orchestrator)
-- [ ] Minimal React UI (brief form → storyboard view with per-shot approval)
-- [ ] Real image generation (Gemini Imagen or equivalent)
