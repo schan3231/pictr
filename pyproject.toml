@@ -19,6 +19,9 @@ dependencies = [
     # Vertex AI SDK for Imagen image generation.
     # Requires: Vertex AI API enabled + billing on your GCP project.
     "google-cloud-aiplatform>=1.50,<2.0",
+    # Google Gen AI SDK for Gemini (planning phase LLM).
+    # Requires: Vertex AI API enabled + ADC credentials.
+    "google-genai>=1.0,<2.0",
 ]
 
 [project.optional-dependencies]
