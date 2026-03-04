@@ -1,5 +1,9 @@
 """
-In-memory session store.
+Session store implementations.
+
+InMemorySessionStore (SessionStore): thread-safe dict.  Default — no GCP needed.
+FirestoreSessionStore: persists to a named Google Cloud Firestore database.
+  Enable with USE_FIRESTORE=true.
 
 Design notes:
 - A plain dict protected by a threading.Lock is sufficient for a single-process
@@ -14,6 +18,8 @@ Design notes:
 from __future__ import annotations
 
 import threading
+
+from google.cloud import firestore
 
 from backend.app.models import Session
 
@@ -88,11 +94,78 @@ class SessionStore:
             return len(self._sessions)
 
 
+class FirestoreSessionStore(SessionStore):
+    """
+    Firestore-backed session store.
+
+    Inherits SessionStore's interface so it can be used anywhere a SessionStore
+    is expected (e.g. StoryboardAgent) without type-annotation changes.
+
+    All session data is serialized via Pydantic's model_dump(mode='json') and
+    deserialized via Session.model_validate(), so nested models round-trip cleanly.
+    """
+
+    def __init__(self, project: str, database: str, collection: str) -> None:
+        # Do NOT call super().__init__() — the in-memory dict/lock are not used.
+        self._client: firestore.Client = firestore.Client(
+            project=project, database=database
+        )
+        self._collection = self._client.collection(collection)
+
+    # ------------------------------------------------------------------
+    # Write operations
+    # ------------------------------------------------------------------
+
+    def create(self, session: Session) -> Session:
+        self._collection.document(session.session_id).set(
+            session.model_dump(mode="json")
+        )
+        return session
+
+    def update(self, session: Session) -> Session:
+        doc_ref = self._collection.document(session.session_id)
+        if not doc_ref.get().exists:
+            raise KeyError(f"Session '{session.session_id}' not found.")
+        doc_ref.set(session.model_dump(mode="json"))
+        return session
+
+    def delete(self, session_id: str) -> None:
+        self._collection.document(session_id).delete()
+
+    # ------------------------------------------------------------------
+    # Read operations
+    # ------------------------------------------------------------------
+
+    def get(self, session_id: str) -> Session | None:
+        snap = self._collection.document(session_id).get()
+        if not snap.exists:
+            return None
+        return Session.model_validate(snap.to_dict())
+
+    def count(self) -> int:
+        # Firestore does not offer a cheap in-process count.
+        # Returns 0 — this field is used for monitoring/tests only.
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Module-level singleton
 #
-# FastAPI routers import `store` directly.  Tests can replace it with a fresh
-# SessionStore() instance via dependency injection if needed.
+# FastAPI routers import `store` directly.  Tests replace it with a fresh
+# SessionStore() instance via conftest.py monkey-patching.
 # ---------------------------------------------------------------------------
 
-store = SessionStore()
+
+def _make_store() -> SessionStore:
+    from backend.app.config import settings  # local import avoids circular dependency
+
+    if settings.use_firestore:
+        return FirestoreSessionStore(
+            project=settings.google_cloud_project,
+            database=settings.firestore_database,
+            collection=settings.firestore_collection,
+        )
+    return SessionStore()
+
+
+store = _make_store()

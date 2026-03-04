@@ -22,6 +22,8 @@ dependencies = [
     # Google Gen AI SDK for Gemini (planning phase LLM).
     # Requires: Vertex AI API enabled + ADC credentials.
     "google-genai>=1.0,<2.0",
+    # Firestore SDK for optional session persistence (USE_FIRESTORE=true).
+    "google-cloud-firestore>=2.16,<3.0",
 ]
 
 [project.optional-dependencies]

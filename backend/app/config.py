@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------------------
     gemini_model: str = "gemini-2.0-flash-001"
 
+    # ---------------------------------------------------------------------------
+    # Firestore — optional session persistence
+    #
+    # Set USE_FIRESTORE=true to persist sessions to a named Firestore database.
+    # Uses google_cloud_project for the GCP project.
+    # Auth uses Application Default Credentials (ADC).
+    # ---------------------------------------------------------------------------
+    use_firestore: bool = False
+    firestore_database: str = "pictr-tubi"
+    firestore_collection: str = "sessions"
+
     @field_validator("allowed_origins", mode="before")
     @classmethod
     def parse_origins(cls, v: object) -> object:
