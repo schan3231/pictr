@@ -40,7 +40,7 @@ export default function App() {
     if (!id) return;
     api.getSession(id).then((s) => {
       setSession(s);
-      setSelectedShotIndex(s.current_shot_index);
+      setSelectedShotIndex(Math.min(s.current_shot_index, Math.max(0, s.shots.length - 1)));
     }).catch(() => {
       // Stale ID — silently clear it.
       localStorage.removeItem(SESSION_KEY);

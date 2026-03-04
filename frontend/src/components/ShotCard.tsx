@@ -41,6 +41,8 @@ export function ShotCard({
 
   const shot = session.shots[idx];
   const isCurrentShot = idx === session.current_shot_index;
+  const isComplete = session.current_shot_index >= session.shots.length;
+  const canApprove = isCurrentShot || isComplete;
   const canRevise = ["ready", "approved", "needs_changes", "failed"].includes(shot.status);
 
   function handleReviseSubmit() {
@@ -191,8 +193,8 @@ export function ShotCard({
               <button
                 className="btn-primary"
                 onClick={() => onApprove(idx)}
-                disabled={loading || !isCurrentShot}
-                title={!isCurrentShot ? "Shots must be approved in order" : undefined}
+                disabled={loading || !canApprove}
+                title={!canApprove ? "Shots must be approved in order" : undefined}
               >
                 {loading ? "Saving…" : "✓ Approve"}
               </button>
@@ -204,7 +206,7 @@ export function ShotCard({
                 ✎ Revise
               </button>
             </div>
-            {!isCurrentShot && (
+            {!isComplete && !isCurrentShot && (
               <p style={{ fontSize: 11, color: "var(--muted)" }}>
                 Shot {session.current_shot_index + 1} must be approved first.
               </p>

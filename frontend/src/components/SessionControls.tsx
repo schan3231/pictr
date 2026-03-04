@@ -44,7 +44,9 @@ export function SessionControls({
             </span>
             {session.phase === "STORYBOARD" && (
               <span className="muted" style={{ fontSize: 12 }}>
-                Shot {session.current_shot_index + 1} / {session.shots.length}
+                {session.current_shot_index >= session.shots.length
+                  ? `All ${session.shots.length} shots`
+                  : `Shot ${session.current_shot_index + 1} / ${session.shots.length}`}
               </span>
             )}
           </div>
