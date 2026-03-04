@@ -95,44 +95,40 @@ class StoryboardAgent:
     # Phase: STORYBOARD
     # ------------------------------------------------------------------
 
-    def generate_current_shot(self, session_id: str) -> Session:
+    def generate_shot(self, session_id: str, shot_index: int) -> Session:
         """
-        Generate the Shot Card for the current shot in the sequence.
+        Generate (or regenerate) the Shot Card for any shot in the sequence.
 
-        Sequential gating: the agent will not generate shot N+1 until shot N
-        is in status="approved".
+        Generatable states: draft, needs_changes, failed.
+        This allows both sequential first-time generation and retroactive
+        regeneration of earlier shots after they've been revised.
 
         Raises:
-            AgentError: if phase is wrong, brief is missing, or the current shot
-                        is not in a generatable state.
+            AgentError: if phase is wrong, brief is missing, or the shot is
+                        not in a generatable state (ready or approved cannot
+                        be regenerated without first requesting changes).
         """
         session = self._get_or_raise(session_id)
         self._require_storyboard_phase(session)
+        shot = self._get_shot_or_raise(session, shot_index)
 
-        idx = session.current_shot_index
-        if idx >= len(session.shots):
-            raise AgentError("All shots have already been generated.")
-
-        shot = session.shots[idx]
-
-        # Only generate if the shot is in a generatable state.
-        if shot.status not in ("draft", "needs_changes"):
+        if shot.status not in ("draft", "needs_changes", "failed"):
             raise AgentError(
-                f"Shot {idx} has status '{shot.status}'; "
-                "it must be 'draft' or 'needs_changes' to generate."
+                f"Shot {shot_index} has status '{shot.status}'; "
+                "it must be 'draft', 'needs_changes', or 'failed' to generate."
             )
 
         assert session.brief is not None  # guaranteed by submit_brief
-        # Retrieve the planned description (stored in the shot's dialogue as a
-        # placeholder until generation; for now derive from index).
-        description = f"Shot {idx + 1} of {len(session.shots)}"
+        description = f"Shot {shot_index + 1} of {len(session.shots)}"
 
         feedback = shot.user_feedback if shot.status == "needs_changes" else None
 
-        logger.info("Session %s: generating shot %d (revision %d)", session_id, idx, shot.revision)
+        logger.info(
+            "Session %s: generating shot %d (revision %d)", session_id, shot_index, shot.revision
+        )
 
         populated = generate_shot_card(shot, session.brief, description, feedback=feedback)
-        session.shots[idx] = populated
+        session.shots[shot_index] = populated
         session.touch()
 
         self._store.update(session)
@@ -183,16 +179,19 @@ class StoryboardAgent:
         self._require_storyboard_phase(session)
         shot = self._get_shot_or_raise(session, shot_index)
 
-        if shot.status not in ("ready", "needs_changes"):
+        if shot.status not in ("ready", "needs_changes", "approved"):
             raise AgentError(
-                f"Shot {shot_index} must be 'ready' or 'needs_changes' to request changes; "
+                f"Shot {shot_index} must be 'ready', 'needs_changes', or 'approved' to request changes; "
                 f"current status: '{shot.status}'."
             )
 
         shot.status = "needs_changes"
         shot.user_feedback = feedback
-        # Reset pointer back to this shot so `generate_current_shot` targets it.
-        session.current_shot_index = shot_index
+        # Only reset the pointer if this shot is at or ahead of the current position.
+        # For retroactive edits on already-approved shots, preserve the pointer so
+        # sequential approval of future shots is not disrupted.
+        if shot_index >= session.current_shot_index:
+            session.current_shot_index = shot_index
         session.shots[shot_index] = shot
         session.touch()
 

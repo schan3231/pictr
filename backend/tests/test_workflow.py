@@ -3,8 +3,8 @@ Integration tests for the full storyboard workflow.
 
 Coverage targets:
 - Happy path: brief → shot list → generate → approve → next shot
-- Sequential gating: cannot skip ahead to a non-current shot
-- Status gating: cannot approve a draft shot; cannot generate an approved shot
+- Status gating: cannot approve a draft shot; cannot generate a ready/approved shot
+- Retroactive editing: revise + regenerate any shot; pointer only resets for current/future shots
 - Revision cycle: revise → regenerate increments revision counter
 - Phase gating: cannot submit brief twice; cannot generate in INTAKE phase
 - Input validation: empty feedback rejected; blank brief fields rejected
@@ -156,21 +156,25 @@ class TestGenerateShot:
         resp = client.post(f"/session/{sid}/shots/0/generate")
         assert resp.status_code == 400
 
-    def test_cannot_skip_ahead_to_shot_1(self, client: TestClient) -> None:
-        """Sequential gate: must generate shot 0 before shot 1."""
+    def test_can_generate_non_current_draft_shot_directly(self, client: TestClient) -> None:
+        """Retroactive: generating a non-current shot is allowed if status permits."""
         sid = _create_session(client)
         _submit_brief(client, sid)
-        resp = client.post(f"/session/{sid}/shots/1/generate")
-        assert resp.status_code == 400
-        assert "current shot" in resp.json()["detail"].lower() or "0" in resp.json()["detail"]
+        # Shot 0 is draft — generate shot 0, approve it, then revise shot 0 retroactively
+        _generate(client, sid, 0)
+        _approve(client, sid, 0)
+        _revise(client, sid, 0, "Redo this one")
+        # Shot 0 is now needs_changes; current_shot_index is still 1 (not rolled back)
+        body = _generate(client, sid, 0)
+        assert body["shots"][0]["status"] == "ready"
 
-    def test_cannot_regenerate_approved_shot(self, client: TestClient) -> None:
-        """Status gate: approved shots cannot be re-generated."""
+    def test_cannot_regenerate_approved_shot_without_revise(self, client: TestClient) -> None:
+        """Status gate: approved shots cannot be re-generated without first revising."""
         sid = _create_session(client)
         _submit_brief(client, sid)
         _generate(client, sid, 0)
         _approve(client, sid, 0)
-        # After approval, current_shot_index == 1; trying to generate 0 should fail
+        # Approved shot — direct generate should be rejected
         resp = client.post(f"/session/{sid}/shots/0/generate")
         assert resp.status_code == 400
 
@@ -246,12 +250,13 @@ class TestReviseShot:
         body = _revise(client, sid, 0, "More colour please")
         assert body["shots"][0]["user_feedback"] == "More colour please"
 
-    def test_revise_resets_current_index(self, client: TestClient) -> None:
-        """Revision must reset the pointer back to the revised shot."""
+    def test_revise_keeps_current_index_when_at_current(self, client: TestClient) -> None:
+        """Revising the current shot keeps current_shot_index pointing at it."""
         sid = _create_session(client)
         _submit_brief(client, sid)
         _generate(client, sid, 0)
         body = _revise(client, sid, 0, "Needs work")
+        # current_shot_index was 0, shot_index is 0 (≥ current), so pointer stays 0
         assert body["current_shot_index"] == 0
 
     def test_regenerate_after_revise_increments_revision(self, client: TestClient) -> None:
@@ -281,6 +286,30 @@ class TestReviseShot:
             json={"feedback": "   "},
         )
         assert resp.status_code == 422
+
+    def test_revise_approved_shot_allowed(self, client: TestClient) -> None:
+        """Retroactive editing: revising an approved shot is permitted."""
+        sid = _create_session(client)
+        _submit_brief(client, sid)
+        _generate(client, sid, 0)
+        _approve(client, sid, 0)
+        body = _revise(client, sid, 0, "Redo with warmer lighting")
+        assert body["shots"][0]["status"] == "needs_changes"
+        assert body["shots"][0]["user_feedback"] == "Redo with warmer lighting"
+
+    def test_revise_past_shot_does_not_roll_back_pointer(self, client: TestClient) -> None:
+        """Retroactive editing: revising a past shot must NOT reset current_shot_index."""
+        sid = _create_session(client)
+        brief = {**VALID_BRIEF, "duration_seconds": 15}  # 3 shots
+        _submit_brief(client, sid, brief)
+        _generate(client, sid, 0)
+        _approve(client, sid, 0)
+        _generate(client, sid, 1)
+        _approve(client, sid, 1)
+        # current_shot_index is now 2
+        body = _revise(client, sid, 0, "Touch up shot 0")
+        # Pointer must stay at 2, not roll back to 0
+        assert body["current_shot_index"] == 2
 
     def test_revise_unknown_session(self, client: TestClient) -> None:
         resp = client.post(

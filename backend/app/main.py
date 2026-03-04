@@ -219,21 +219,8 @@ async def generate_shot(session_id: str, shot_index: int) -> Session:
     Shot must be in `draft` or `needs_changes` status.  After generation the
     shot transitions to `ready` and the full Shot Card is populated.
     """
-    # Validate the requested index matches the active pointer before hitting
-    # the agent, so the error message is precise.
-    session = store.get(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
-    if shot_index != session.current_shot_index:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Shot {shot_index} is not the current shot. "
-                f"Generate shot {session.current_shot_index} first."
-            ),
-        )
     try:
-        return agent.generate_current_shot(session_id)
+        return agent.generate_shot(session_id, shot_index)
     except KeyError:
         raise HTTPException(
             status_code=404, detail=f"Session '{session_id}' not found."

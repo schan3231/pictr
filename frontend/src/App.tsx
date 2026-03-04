@@ -4,6 +4,7 @@ import { SESSION_KEY, SessionControls } from "./components/SessionControls";
 import { BriefForm } from "./components/BriefForm";
 import { ShotList } from "./components/ShotList";
 import { ShotCard } from "./components/ShotCard";
+import { StoryboardGrid } from "./components/StoryboardGrid";
 import { Toast } from "./components/Toast";
 import type { Brief, Session } from "./types";
 import "./styles.css";
@@ -12,13 +13,20 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [selectedShotIndex, setSelectedShotIndex] = useState<number>(0);
 
-  /** Wraps an API call: sets loading, catches errors → toast, refreshes session. */
-  async function run(fn: () => Promise<Session>): Promise<void> {
+  /**
+   * Wraps an API call: sets loading, catches errors → toast, updates session.
+   * focusIndex: if provided, sets selectedShotIndex after success.
+   */
+  async function run(fn: () => Promise<Session>, focusIndex?: number): Promise<void> {
     setLoading(true);
     try {
       const updated = await fn();
       setSession(updated);
+      if (focusIndex !== undefined) {
+        setSelectedShotIndex(Math.min(focusIndex, updated.shots.length - 1));
+      }
     } catch (err) {
       setToast(err instanceof Error ? err.message : "An unexpected error occurred.");
     } finally {
@@ -30,29 +38,35 @@ export default function App() {
   useEffect(() => {
     const id = localStorage.getItem(SESSION_KEY);
     if (!id) return;
-    api.getSession(id).then(setSession).catch(() => {
+    api.getSession(id).then((s) => {
+      setSession(s);
+      setSelectedShotIndex(s.current_shot_index);
+    }).catch(() => {
       // Stale ID — silently clear it.
       localStorage.removeItem(SESSION_KEY);
     });
   }, []);
+
+  const handleSelectShot = useCallback((i: number) => setSelectedShotIndex(i), []);
 
   const handleCreateSession = useCallback(() => {
     run(async () => {
       const s = await api.createSession();
       localStorage.setItem(SESSION_KEY, s.session_id);
       return s;
-    });
+    }, 0);
   }, []);
 
   const handleClearSession = useCallback(() => {
     localStorage.removeItem(SESSION_KEY);
     setSession(null);
+    setSelectedShotIndex(0);
   }, []);
 
   const handleSubmitBrief = useCallback(
     (brief: Brief) => {
       if (!session) return;
-      run(() => api.submitBrief(session.session_id, brief));
+      run(() => api.submitBrief(session.session_id, brief), 0);
     },
     [session],
   );
@@ -60,7 +74,7 @@ export default function App() {
   const handleGenerate = useCallback(
     (shotIndex: number) => {
       if (!session) return;
-      run(() => api.generateShot(session.session_id, shotIndex));
+      run(() => api.generateShot(session.session_id, shotIndex), shotIndex);
     },
     [session],
   );
@@ -68,7 +82,8 @@ export default function App() {
   const handleApprove = useCallback(
     (shotIndex: number) => {
       if (!session) return;
-      run(() => api.approveShot(session.session_id, shotIndex));
+      // After approval, advance focus to the next shot (the new current).
+      run(() => api.approveShot(session.session_id, shotIndex), shotIndex + 1);
     },
     [session],
   );
@@ -76,10 +91,15 @@ export default function App() {
   const handleRevise = useCallback(
     (shotIndex: number, feedback: string) => {
       if (!session) return;
-      run(() => api.reviseShot(session.session_id, shotIndex, feedback));
+      run(() => api.reviseShot(session.session_id, shotIndex, feedback), shotIndex);
     },
     [session],
   );
+
+  const showShotCard =
+    session?.phase === "STORYBOARD" &&
+    session.shots.length > 0 &&
+    selectedShotIndex < session.shots.length;
 
   return (
     <>
@@ -109,11 +129,15 @@ export default function App() {
           )}
 
           {session?.phase === "STORYBOARD" && (
-            <ShotList session={session} />
+            <ShotList
+              session={session}
+              selectedShotIndex={selectedShotIndex}
+              onSelectShot={handleSelectShot}
+            />
           )}
         </aside>
 
-        {/* ── Right panel: shot card ── */}
+        {/* ── Right panel: storyboard grid + selected shot card ── */}
         <main className="right-panel">
           {!session && <EmptyState />}
 
@@ -124,13 +148,23 @@ export default function App() {
           )}
 
           {session?.phase === "STORYBOARD" && (
-            <ShotCard
-              session={session}
-              loading={loading}
-              onGenerate={handleGenerate}
-              onApprove={handleApprove}
-              onRevise={handleRevise}
-            />
+            <>
+              <StoryboardGrid
+                session={session}
+                selectedShotIndex={selectedShotIndex}
+                onSelectShot={handleSelectShot}
+              />
+              {showShotCard && (
+                <ShotCard
+                  session={session}
+                  shotIndex={selectedShotIndex}
+                  loading={loading}
+                  onGenerate={handleGenerate}
+                  onApprove={handleApprove}
+                  onRevise={handleRevise}
+                />
+              )}
+            </>
           )}
         </main>
       </div>

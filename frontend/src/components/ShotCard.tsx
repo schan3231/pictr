@@ -1,8 +1,9 @@
 import { useState } from "react";
-import type { Session, Shot } from "../types";
+import type { Session } from "../types";
 
 interface ShotCardProps {
   session: Session;
+  shotIndex: number;
   loading: boolean;
   onGenerate: (shotIndex: number) => void;
   onApprove: (shotIndex: number) => void;
@@ -10,18 +11,21 @@ interface ShotCardProps {
 }
 
 /**
- * The active Shot Card panel.
+ * Shot Card panel for a specific shot (identified by shotIndex prop).
  *
- * Covers four states the current shot can be in:
+ * Covers four states the shot can be in:
  *  1. draft          → offer Generate button
  *  2. ready          → show image + text + Approve / Revise controls
  *  3. needs_changes  → re-show Generate (will pass stored feedback)
- *  4. failed         → show error + offer Regenerate
+ *  4. failed         → show error + offer Regenerate / Revise
+ *  5. approved       → show content + Revise (retroactive editing)
  *
- * All shots are complete: show the completion banner.
+ * Approve is only enabled when shotIndex === current_shot_index (sequential gating).
+ * Revise is available for ready, approved, needs_changes, and failed shots.
  */
 export function ShotCard({
   session,
+  shotIndex,
   loading,
   onGenerate,
   onApprove,
@@ -30,27 +34,14 @@ export function ShotCard({
   const [feedback, setFeedback] = useState("");
   const [reviseOpen, setReviseOpen] = useState(false);
 
-  const idx = session.current_shot_index;
-  const allDone =
-    session.shots.length > 0 &&
-    session.shots.every((s: Shot) => s.status === "approved");
+  const idx = shotIndex;
 
-  // All shots approved — storyboard is complete.
-  if (allDone) {
-    return (
-      <div>
-        <p className="section-title">Storyboard</p>
-        <div className="complete-banner">
-          🎬 All {session.shots.length} shots approved — storyboard complete!
-        </div>
-      </div>
-    );
-  }
-
-  // Guard: shouldn't happen, but keeps TS happy.
-  if (idx >= session.shots.length) return null;
+  // Guard: out-of-bounds index.
+  if (idx < 0 || idx >= session.shots.length) return null;
 
   const shot = session.shots[idx];
+  const isCurrentShot = idx === session.current_shot_index;
+  const canRevise = ["ready", "approved", "needs_changes", "failed"].includes(shot.status);
 
   function handleReviseSubmit() {
     if (!feedback.trim()) return;
@@ -58,6 +49,62 @@ export function ShotCard({
     setFeedback("");
     setReviseOpen(false);
   }
+
+  const textFields = (shot.dialogue_text || shot.sfx_notes || shot.camera_notes) ? (
+    <>
+      {shot.dialogue_text && (
+        <div className="shot-field">
+          <p className="shot-field-label">🎤 Dialogue / Voiceover</p>
+          <p className="shot-field-value">{shot.dialogue_text}</p>
+        </div>
+      )}
+      {shot.sfx_notes && (
+        <div className="shot-field">
+          <p className="shot-field-label">🔊 SFX Notes</p>
+          <p className="shot-field-value">{shot.sfx_notes}</p>
+        </div>
+      )}
+      {shot.camera_notes && (
+        <div className="shot-field">
+          <p className="shot-field-label">🎬 Camera</p>
+          <p className="shot-field-value">{shot.camera_notes}</p>
+        </div>
+      )}
+    </>
+  ) : null;
+
+  const reviseForm = reviseOpen ? (
+    <div>
+      <div className="form-group">
+        <label htmlFor={`feedback-${idx}`}>Revision feedback</label>
+        <textarea
+          id={`feedback-${idx}`}
+          value={feedback}
+          onChange={(e) => setFeedback(e.target.value)}
+          placeholder="Describe what to change…"
+          rows={3}
+        />
+      </div>
+      <div className="btn-row">
+        <button
+          className="btn-primary"
+          onClick={handleReviseSubmit}
+          disabled={loading || !feedback.trim()}
+        >
+          {loading ? "Submitting…" : "Submit Feedback →"}
+        </button>
+        <button
+          className="btn-ghost"
+          onClick={() => {
+            setReviseOpen(false);
+            setFeedback("");
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  ) : null;
 
   return (
     <div>
@@ -98,29 +145,8 @@ export function ShotCard({
           )}
         </div>
 
-        {/* ── Generated text fields ── */}
-        {shot.status === "ready" && (
-          <>
-            {shot.dialogue_text && (
-              <div className="shot-field">
-                <p className="shot-field-label">🎤 Dialogue / Voiceover</p>
-                <p className="shot-field-value">{shot.dialogue_text}</p>
-              </div>
-            )}
-            {shot.sfx_notes && (
-              <div className="shot-field">
-                <p className="shot-field-label">🔊 SFX Notes</p>
-                <p className="shot-field-value">{shot.sfx_notes}</p>
-              </div>
-            )}
-            {shot.camera_notes && (
-              <div className="shot-field">
-                <p className="shot-field-label">🎬 Camera</p>
-                <p className="shot-field-value">{shot.camera_notes}</p>
-              </div>
-            )}
-          </>
-        )}
+        {/* ── Generated text fields (ready + approved) ── */}
+        {(shot.status === "ready" || shot.status === "approved") && textFields}
 
         {/* ── Previous feedback ── */}
         {shot.user_feedback && shot.status !== "needs_changes" && (
@@ -132,8 +158,8 @@ export function ShotCard({
 
         <hr className="divider" />
 
-        {/* ── Action buttons ── */}
-        {(shot.status === "draft" || shot.status === "needs_changes") && (
+        {/* ── draft: Generate ── */}
+        {shot.status === "draft" && (
           <div className="btn-row">
             <button
               className="btn-primary"
@@ -145,13 +171,28 @@ export function ShotCard({
           </div>
         )}
 
+        {/* ── needs_changes: Regenerate ── */}
+        {shot.status === "needs_changes" && (
+          <div className="btn-row">
+            <button
+              className="btn-primary"
+              onClick={() => onGenerate(idx)}
+              disabled={loading}
+            >
+              {loading ? "Generating…" : `⚡ Regenerate Shot ${idx + 1}`}
+            </button>
+          </div>
+        )}
+
+        {/* ── ready: Approve + Revise ── */}
         {shot.status === "ready" && (
           <>
             <div className="btn-row">
               <button
                 className="btn-primary"
                 onClick={() => onApprove(idx)}
-                disabled={loading}
+                disabled={loading || !isCurrentShot}
+                title={!isCurrentShot ? "Shots must be approved in order" : undefined}
               >
                 {loading ? "Saving…" : "✓ Approve"}
               </button>
@@ -163,52 +204,52 @@ export function ShotCard({
                 ✎ Revise
               </button>
             </div>
-
-            {reviseOpen && (
-              <div>
-                <div className="form-group">
-                  <label htmlFor="feedback">Revision feedback</label>
-                  <textarea
-                    id="feedback"
-                    value={feedback}
-                    onChange={(e) => setFeedback(e.target.value)}
-                    placeholder="Describe what to change…"
-                    rows={3}
-                  />
-                </div>
-                <div className="btn-row">
-                  <button
-                    className="btn-primary"
-                    onClick={handleReviseSubmit}
-                    disabled={loading || !feedback.trim()}
-                  >
-                    {loading ? "Submitting…" : "Submit Feedback →"}
-                  </button>
-                  <button
-                    className="btn-ghost"
-                    onClick={() => {
-                      setReviseOpen(false);
-                      setFeedback("");
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
+            {!isCurrentShot && (
+              <p style={{ fontSize: 11, color: "var(--muted)" }}>
+                Shot {session.current_shot_index + 1} must be approved first.
+              </p>
             )}
+            {reviseForm}
           </>
         )}
 
+        {/* ── approved: Revise only ── */}
+        {shot.status === "approved" && canRevise && (
+          <>
+            <div className="btn-row">
+              <button
+                className="btn-secondary"
+                onClick={() => setReviseOpen((v) => !v)}
+                disabled={loading}
+              >
+                ✎ Revise
+              </button>
+            </div>
+            {reviseForm}
+          </>
+        )}
+
+        {/* ── failed: Retry + Revise ── */}
         {shot.status === "failed" && (
-          <div className="btn-row">
-            <button
-              className="btn-danger"
-              onClick={() => onGenerate(idx)}
-              disabled={loading}
-            >
-              {loading ? "Retrying…" : "↺ Retry Generation"}
-            </button>
-          </div>
+          <>
+            <div className="btn-row">
+              <button
+                className="btn-danger"
+                onClick={() => onGenerate(idx)}
+                disabled={loading}
+              >
+                {loading ? "Retrying…" : "↺ Retry Generation"}
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => setReviseOpen((v) => !v)}
+                disabled={loading}
+              >
+                ✎ Revise
+              </button>
+            </div>
+            {reviseForm}
+          </>
         )}
       </div>
     </div>
