@@ -2,7 +2,7 @@
 
 > **Tubi Builders Program submission** — Generate professional commercial storyboards from a creative brief using Gemini for planning and Imagen for image generation.
 > 
-<img width="1510" height="858" alt="Screenshot 2026-03-05 at 12 39 58 AM" src="https://github.com/user-attachments/assets/844d0399-194e-43f4-8bb5-ce0812fa5884" />
+<img width="1512" height="853" alt="Screenshot 2026-03-05 at 12 39 48 AM" src="https://github.com/user-attachments/assets/ac5f81e1-fe5b-4136-870e-f7d06d8f14d6" />
 
 ---
 
