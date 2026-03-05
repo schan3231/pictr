@@ -1,6 +1,8 @@
 # PICTr — AI Storyboard Generator
 
 > **Tubi Builders Program submission** — Generate professional commercial storyboards from a creative brief using Gemini for planning and Imagen for image generation.
+> 
+<img width="1510" height="858" alt="Screenshot 2026-03-05 at 12 39 58 AM" src="https://github.com/user-attachments/assets/844d0399-194e-43f4-8bb5-ce0812fa5884" />
 
 ---
 
